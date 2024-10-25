@@ -61,7 +61,7 @@ public:
 			}
 			if (len == num)
 				return true;
-			}
+		}
 		return false;
 	}
 
@@ -98,7 +98,7 @@ public:
 			}
 			if (len == num)
 				return;
-			}
+		}
 
 		throw std::range_error("couldn't skip more bytes");
 	}
