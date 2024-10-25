@@ -34,7 +34,6 @@ TEST(TestH26xSPS, TestParseSPS1)
 	EXPECT_EQ(0, SpsParser.frame_cropping_flag);
 
 	// vui parameters
-	EXPECT_EQ(1,SpsParser.vui_parameters_present_flag);
 	EXPECT_TRUE(SpsParser.vuiParams);
 	EXPECT_EQ(0, SpsParser.vuiParams->aspect_ratio_info_present_flag);
 	EXPECT_EQ(0, SpsParser.vuiParams->overscan_info_present_flag);
@@ -47,8 +46,6 @@ TEST(TestH26xSPS, TestParseSPS1)
 	EXPECT_EQ(1, SpsParser.vuiParams->num_units_in_tick);
 	EXPECT_EQ(50, SpsParser.vuiParams->time_scale);
 	EXPECT_EQ(0, SpsParser.vuiParams->fixed_frame_rate_flag);
-	EXPECT_EQ(0, SpsParser.vuiParams->nal_hrd_parameters_present_flag);
-	EXPECT_EQ(0, SpsParser.vuiParams->vcl_hrd_parameters_present_flag);
 	EXPECT_EQ(0, SpsParser.vuiParams->pic_struct_present_flag);
 	EXPECT_EQ(1, SpsParser.vuiParams->bitstream_restriction_flag);
 	EXPECT_EQ(1, SpsParser.vuiParams->motion_vectors_over_pic_boundaries_flag);
@@ -100,7 +97,6 @@ TEST(TestH26xSPS, TestParseSPS2)
 	EXPECT_EQ(4, SpsParser.frame_crop_bottom_offset);
 
   	// vui_parameters()
-	EXPECT_EQ(1, SpsParser.vui_parameters_present_flag);
 	EXPECT_TRUE(SpsParser.vuiParams);
 	EXPECT_EQ(1, SpsParser.vuiParams->aspect_ratio_info_present_flag);
 	EXPECT_EQ(1, SpsParser.vuiParams->aspect_ratio_idc);
@@ -111,8 +107,6 @@ TEST(TestH26xSPS, TestParseSPS2)
 	EXPECT_EQ(1, SpsParser.vuiParams->num_units_in_tick);
 	EXPECT_EQ(60, SpsParser.vuiParams->time_scale);
 	EXPECT_EQ(0, SpsParser.vuiParams->fixed_frame_rate_flag);
-	EXPECT_EQ(0, SpsParser.vuiParams->nal_hrd_parameters_present_flag);
-	EXPECT_EQ(0, SpsParser.vuiParams->vcl_hrd_parameters_present_flag);
 	EXPECT_EQ(0, SpsParser.vuiParams->pic_struct_present_flag);
 	EXPECT_EQ(1, SpsParser.vuiParams->bitstream_restriction_flag);
 	EXPECT_EQ(1, SpsParser.vuiParams->motion_vectors_over_pic_boundaries_flag);
@@ -151,8 +145,6 @@ TEST(TestH26xSPS, TestParseSPSVUI1)
 	EXPECT_EQ(1, VuiParams.num_units_in_tick);
 	EXPECT_EQ(50, VuiParams.time_scale);
 	EXPECT_EQ(0, VuiParams.fixed_frame_rate_flag);
-	EXPECT_EQ(0, VuiParams.nal_hrd_parameters_present_flag);
-	EXPECT_EQ(0, VuiParams.vcl_hrd_parameters_present_flag);
 	EXPECT_EQ(0, VuiParams.pic_struct_present_flag);
 	EXPECT_EQ(1, VuiParams.bitstream_restriction_flag);
 	EXPECT_EQ(1, VuiParams.motion_vectors_over_pic_boundaries_flag);
@@ -196,8 +188,6 @@ TEST(TestH26xSPS, TestParseSPSVUI2)
 	EXPECT_EQ(1, VuiParams.num_units_in_tick);
 	EXPECT_EQ(50, VuiParams.time_scale);
 	EXPECT_EQ(0, VuiParams.fixed_frame_rate_flag);
-	EXPECT_EQ(0, VuiParams.nal_hrd_parameters_present_flag);
-	EXPECT_EQ(0, VuiParams.vcl_hrd_parameters_present_flag);
 	EXPECT_EQ(0, VuiParams.pic_struct_present_flag);
 	EXPECT_EQ(1, VuiParams.bitstream_restriction_flag);
 	EXPECT_EQ(1, VuiParams.motion_vectors_over_pic_boundaries_flag);
@@ -242,8 +232,6 @@ TEST(TestH26xSPS, TestParseSPSVUI3)
 	EXPECT_EQ(1, VuiParams.num_units_in_tick);
 	EXPECT_EQ(50, VuiParams.time_scale);
 	EXPECT_EQ(0, VuiParams.fixed_frame_rate_flag);
-	EXPECT_EQ(0, VuiParams.nal_hrd_parameters_present_flag);
-	EXPECT_EQ(0, VuiParams.vcl_hrd_parameters_present_flag);
 	EXPECT_EQ(0, VuiParams.pic_struct_present_flag);
 	EXPECT_EQ(1, VuiParams.bitstream_restriction_flag);
 	EXPECT_EQ(1, VuiParams.motion_vectors_over_pic_boundaries_flag);
@@ -286,8 +274,6 @@ TEST(TestH26xSPS, TestParseSPSVUI4)
 	EXPECT_EQ(15151515, VuiParams.num_units_in_tick);
 	EXPECT_EQ(1000000000, VuiParams.time_scale);
 	EXPECT_EQ(1, VuiParams.fixed_frame_rate_flag);
-	EXPECT_EQ(0, VuiParams.nal_hrd_parameters_present_flag);
-	EXPECT_EQ(0, VuiParams.vcl_hrd_parameters_present_flag);
 	EXPECT_EQ(0, VuiParams.pic_struct_present_flag);
 	EXPECT_EQ(1, VuiParams.bitstream_restriction_flag);
 	EXPECT_EQ(1, VuiParams.motion_vectors_over_pic_boundaries_flag);

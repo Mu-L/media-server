@@ -120,9 +120,7 @@ public:
 		uint32_t 	  num_units_in_tick = 0;
 		uint32_t 	  time_scale = 0;
 		uint32_t 	  fixed_frame_rate_flag = 0;
-		uint32_t      nal_hrd_parameters_present_flag = 0;
 		std::optional<HrdParameters> nal_hrd_parameters;
-		uint32_t      vcl_hrd_parameters_present_flag = 0;
 		std::optional<HrdParameters> vcl_hrd_parameters;
 		uint32_t      low_delay_hrd_flag = 0;
 		uint32_t 	  pic_struct_present_flag = 0;
@@ -220,7 +218,7 @@ public:
 			}
 
 			// nal_hrd_parameters_present_flag  u(1)
-			nal_hrd_parameters_present_flag = r.Get(1);
+			bool nal_hrd_parameters_present_flag = r.Get(1);
 			if (nal_hrd_parameters_present_flag) 
 			{
 				// nal hrd_parameters()
@@ -231,7 +229,7 @@ public:
 			}
 
 			// vcl_hrd_parameters_present_flag  u(1)
-			vcl_hrd_parameters_present_flag = r.Get(1);
+			bool vcl_hrd_parameters_present_flag = r.Get(1);
 			if (vcl_hrd_parameters_present_flag) 
 			{
 				HrdParameters hrd;
@@ -317,9 +315,9 @@ public:
 			Debug("\t\taspect_ratio_info_present_flag=%u\n", aspect_ratio_info_present_flag);
 			Debug("\t\taspect_ratio_idc=%u\n", aspect_ratio_idc);
 			if (sar_width)
-				Debug("\t\tsar_width=%u\n", sar_width);
+				Debug("\t\tsar_width=%u\n", sar_width.value());
 			if (sar_height)
-				Debug("\t\tsar_height=%u\n", sar_height);
+				Debug("\t\tsar_height=%u\n", sar_height.value());
 			Debug("\t\toverscan_info_present_flag=%u\n", overscan_info_present_flag);
 			Debug("\t\toverscan_appropriate_flag=%u\n", overscan_appropriate_flag);
 			Debug("\t\tvideo_signal_type_present_flag=%u\n", video_signal_type_present_flag);
@@ -336,13 +334,11 @@ public:
 			Debug("\t\tnum_units_in_tick=%u\n", num_units_in_tick);
 			Debug("\t\ttime_scale=%u\n", time_scale);
 			Debug("\t\tfixed_frame_rate_flag=%u\n", fixed_frame_rate_flag);
-			Debug("\t\tnal_hrd_parameters_present_flag=%u\n", nal_hrd_parameters_present_flag);
 			if (nal_hrd_parameters)
 			{
 				Debug("\t\t[H264SeqParameterSet VUI params : NAL HRD params\n");
 				nal_hrd_parameters->Dump();
 			}
-			Debug("\t\tvcl_hrd_parameters_present_flag=%u\n", vcl_hrd_parameters_present_flag);
 			if (vcl_hrd_parameters)
 			{
 				Debug("\t\t[H264SeqParameterSet VUI params : VCL HRD params\n");
@@ -455,7 +451,7 @@ public:
 				frame_crop_bottom_offset	= r.GetExpGolomb();
 			}
 
-			vui_parameters_present_flag = r.Get(1);
+			bool vui_parameters_present_flag = r.Get(1);
 			if (vui_parameters_present_flag) 
 			{
 				VuiParameters vuiParams;
@@ -544,7 +540,6 @@ public:
 	DWORD			frame_crop_right_offset = 0;
 	DWORD			frame_crop_top_offset = 0;
 	DWORD			frame_crop_bottom_offset = 0;
-	bool			vui_parameters_present_flag = false;
 	bool			separate_colour_plane_flag = 0;
 	std::optional<VuiParameters>   vuiParams;
 };
