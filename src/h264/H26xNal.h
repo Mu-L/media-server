@@ -133,7 +133,10 @@ protected:
 				len++;
 			}
 			if (len == num)
+			{
+				zeros = z;
 				return value;
+			}
 		}
 		
 		throw std::range_error("couldn't peek more bytes");

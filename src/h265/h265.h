@@ -251,7 +251,7 @@ public:
 		Debug("\t %s.level_idc                            = %d\n", name.c_str(), level_idc);
 	}
 
-private:
+
 	// initial values refer to RFC 7798 section 7.1
 	BYTE profile_space = 0;
 	bool tier_flag = 0;
@@ -312,7 +312,6 @@ public:
 		}
 	}
 
-private:
 	GenericProfileTierLevel	general_profile_tier_level;
 	std::array<bool, HEVCParams::MAX_SUB_LAYERS> sub_layer_profile_present_flag;
 	std::array<bool, HEVCParams::MAX_SUB_LAYERS> sub_layer_level_present_flag;
@@ -327,17 +326,16 @@ public:
 	void Dump()	const
 	{
 		Debug("[H265VideoParameterSet\n");
-		Debug("\tvps_id                     = %d\n", vps_id);
-		Debug("\tvps_max_layers_minus1      = %d\n", vps_max_layers_minus1);
-		Debug("\tvps_max_sub_layers_minus1  = %d\n", vps_max_sub_layers_minus1);
-		Debug("\tvps_temporal_id            = %d\n", vps_temporal_id_nesting_flag);
+		Debug("\tvps_id                                 = %d\n", vps_id);
+		Debug("\tvps_max_layers_minus1                  = %d\n", vps_max_layers_minus1);
+		Debug("\tvps_max_sub_layers_minus1              = %d\n", vps_max_sub_layers_minus1);
+		Debug("\vps_temporal_id_nesting_flag            = %d\n", vps_temporal_id_nesting_flag);
 		profile_tier_level.Dump();
 		Debug("H265VideoParameterSet/]\n");
 	}
 
 	const H265ProfileTierLevel& GetProfileTierLevel() const {return profile_tier_level;}
 
-private:
 	BYTE vps_id				= 0;
 	BYTE vps_max_layers_minus1		= 0;
 	BYTE vps_max_sub_layers_minus1		= 0;
@@ -372,7 +370,7 @@ public:
 		Debug("\tseparate_colour_plane_flag   = %d\n", separate_colour_plane_flag);
 		Debug("H265SeqParameterSet/]\n");
 	}
-private:
+
 	BYTE			vps_id				= 0;
 	BYTE			max_sub_layers_minus1		= 0;
 	BYTE			ext_or_max_sub_layers_minus1	= 0;
@@ -422,7 +420,7 @@ public:
 	uint8_t GetNumExtraSliceHeaderBits() const { return num_extra_slice_header_bits; }
 	bool GetDependentSliceSegmentsEnabledFlag() const { return dependent_slice_segments_enabled_flag; }
 	
-private:
+
 	BYTE pps_id = 0; // [0, 63]
 	BYTE sps_id = 0; // [0, 15]
 	bool dependent_slice_segments_enabled_flag = false;
