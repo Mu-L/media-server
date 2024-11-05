@@ -242,6 +242,35 @@ std::unique_ptr<VideoFrame> RTMPH26xPacketizer<DescClass, SPSClass, PPSClass, co
 				pps = localPps;
 			}
 		}
+
+		if (videoFrame->GetSenderTime ())
+		{
+
+			//Add unregistered SEI message NAL
+			uint8_t sei[28] = { 0x06, 0x05, 0x18, 0x9a, 0x21, 0xf3, 0xbe, 0x31,
+					    0xf0, 0x4b, 0x78, 0xb0, 0xbe, 0xc7, 0xf7, 0xdb,
+					    0xb9, 0x72, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00,
+					    0x00, 0x00, 0x00, 0x80 };
+
+			//Set timestamp
+			set8 (sei, 19, videoFrame->GetSenderTime ());
+
+			//Escape nal
+			uint8_t seiEscaped[sizeof (sei) * 2];
+			auto seiSize = NalEscapeRbsp (seiEscaped, sizeof (seiEscaped), sei, sizeof (sei)).value ();
+
+			//Set size after escaping
+			setN (nalUnitLength, nalHeader, 0, seiSize);
+
+			//Append nal size header
+			frame->AppendMedia (nalHeader, nalUnitLength);
+
+			//Append nal
+			auto ini = frame->AppendMedia (seiEscaped, seiSize);
+
+			//Crete rtp packet
+			frame->AddRtpPacket (ini, seiSize, nullptr, 0);
+		}
 	}
 	
 	if (sps.has_value())
@@ -249,35 +278,6 @@ std::unique_ptr<VideoFrame> RTMPH26xPacketizer<DescClass, SPSClass, PPSClass, co
 		//Set dimensions
 		frame->SetWidth(sps->GetWidth());
 		frame->SetHeight(sps->GetHeight());
-	}
-
-	if (videoFrame->GetSenderTime())
-	{
-		               
-		//Add unregistered SEI message NAL
-		uint8_t sei[28] = { 0x06, 0x05, 0x18, 0x9a, 0x21, 0xf3, 0xbe, 0x31,
-				    0xf0, 0x4b, 0x78, 0xb0, 0xbe, 0xc7, 0xf7, 0xdb,
-				    0xb9, 0x72, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00,
-				    0x00, 0x00, 0x00, 0x80 };
-
-		//Set timestamp
-		set8(sei, 19, videoFrame->GetSenderTime());
-
-		//Escape nal
-		uint8_t seiEscaped[sizeof(sei)*2];
-		auto seiSize = NalEscapeRbsp(seiEscaped, sizeof(seiEscaped), sei, sizeof(sei)).value();
-
-		//Set size after escaping
-		setN(nalUnitLength, nalHeader, 0, seiSize);
-
-		//Append nal size header
-		frame->AppendMedia(nalHeader, nalUnitLength);
-
-		//Append nal
-		auto ini = frame->AppendMedia(seiEscaped, seiSize);
-
-		//Crete rtp packet
-		frame->AddRtpPacket(ini, seiSize, nullptr, 0);
 	}
 
 	//Malloc
