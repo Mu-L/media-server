@@ -288,8 +288,7 @@ public:
 				}
 
 				max_num_reorder_frames = r.GetExpGolomb();
-				if (max_num_reorder_frames < 0 ||
-					max_num_reorder_frames > MaxDpbFrames) 
+				if (max_num_reorder_frames > MaxDpbFrames)
 				{
 					Warning("-H264SeqParameterSet::DecodeVuiParameters() Invalid max_num_reorder_frames %u. Not in Range [%u, %u]\n", 
 							max_num_reorder_frames, 0, MaxDpbFrames);
@@ -297,8 +296,7 @@ public:
 				}
 
 				max_dec_frame_buffering = r.GetExpGolomb();
-				if (max_dec_frame_buffering < 0 ||
-					max_dec_frame_buffering > MaxDpbFrames)
+				if (max_dec_frame_buffering > MaxDpbFrames)
 				{
 					Warning("-H264SeqParameterSet::DecodeVuiParameters() Invalid max_dec_frame_buffering %u. Not in Range [%u, %u]\n", 
 							max_dec_frame_buffering, 0, MaxDpbFrames);
@@ -523,8 +521,8 @@ public:
 	BYTE			pic_order_cnt_type = 0;
 	BYTE			log2_max_pic_order_cnt_lsb_minus4 = 0;
 	bool			delta_pic_order_always_zero_flag = false;
-	int			    offset_for_non_ref_pic = 0;
-	int			    offset_for_top_to_bottom_field = 0;
+	int			offset_for_non_ref_pic = 0;
+	int			offset_for_top_to_bottom_field = 0;
 	BYTE			num_ref_frames_in_pic_order_cnt_cycle = 0;
 	std::vector<int>	offset_for_ref_frame;
 	DWORD			num_ref_frames = 0;
