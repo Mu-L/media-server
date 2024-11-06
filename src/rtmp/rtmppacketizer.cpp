@@ -304,23 +304,18 @@ std::unique_ptr<VideoFrame> RTMPH26xPacketizer<DescClass, SPSClass, PPSClass, co
 
 		//Get NAL start
 		const BYTE* nal = data + nalUnitLength;
-
-		//Skip fill data nalus for h264
-		if (codec == VideoCodec::H264 && nal[0] == 12)
-		{
-			//Skip it
-			data += nalUnitLength + nalSize;
-			size -= nalUnitLength + nalSize;
-			//Next
-			continue;
-		}
 		
-		if (parsingFrameType && sps.has_value() && pps.has_value())
+		bool skip = false;
+		if constexpr (std::is_same_v<SPSClass, H264SeqParameterSet>)
 		{
-			if constexpr (std::is_same_v<SPSClass, H264SeqParameterSet>)
+			const AvcNaluType nalUnitType = AvcNaluType(nal[0] & 0x1f);
+			
+			switch (nalUnitType)
 			{
-				const BYTE nalUnitType = nal[0] & 0x1f;
-				if (nalUnitType == 1 || nalUnitType == 2 || nalUnitType == 5)
+			case AvcNaluType::Slice:
+			case AvcNaluType::Dpa:
+			case AvcNaluType::IdrSlice:
+				if (parsingFrameType && sps.has_value() && pps.has_value())
 				{
 					H264SliceHeader header;
 					if (header.Decode(nal + 1, nalSize - 1, *sps))
@@ -331,13 +326,49 @@ std::unique_ptr<VideoFrame> RTMPH26xPacketizer<DescClass, SPSClass, PPSClass, co
 						parsingFrameType = false;
 					}
 				}
+				break;
+			case AvcNaluType::Sps:
+				// Skip if we already have sps inserted from the AVCDescriptor. 
+				// Safari may complain about duplicated parameter sets.
+				skip = desc.GetNumOfSequenceParameterSets() > 0;
+				break;
+			case AvcNaluType::Pps:
+				// Skip if we already have pps inserted from the AVCDescriptor.  
+				// Safari may complain about duplicated parameter sets.
+				skip = desc.GetNumOfPictureParameterSets() > 0;
+				break;
+			case AvcNaluType::FillerData:
+				//Skip fill data nalus for h264
+				skip = true;
+				break;
+			default:
+				break;
 			}
-			else if constexpr (std::is_same_v<SPSClass, H265SeqParameterSet>)
+		}
+		else if constexpr (std::is_same_v<SPSClass, H265SeqParameterSet>)
+		{
+			auto naluHeader = get2(nal, 0);
+			BYTE nalUnitType = (naluHeader >> 9) & 0b111111;
+			
+			switch (nalUnitType)
 			{
-				auto naluHeader = get2(nal, 0);
-				BYTE nalUnitType = (naluHeader >> 9) & 0b111111;
-				if ((nalUnitType <= HEVC_RTP_NALU_Type::RASL_R) || 
-					(nalUnitType >= HEVC_RTP_NALU_Type::BLA_W_LP && nalUnitType <= HEVC_RTP_NALU_Type::CRA_NUT))
+			case HEVC_RTP_NALU_Type::TRAIL_N:
+			case HEVC_RTP_NALU_Type::TRAIL_R:
+			case HEVC_RTP_NALU_Type::TSA_N:
+			case HEVC_RTP_NALU_Type::TSA_R:
+			case HEVC_RTP_NALU_Type::STSA_N:
+			case HEVC_RTP_NALU_Type::STSA_R:
+			case HEVC_RTP_NALU_Type::RADL_N:
+			case HEVC_RTP_NALU_Type::RADL_R:
+			case HEVC_RTP_NALU_Type::RASL_N:
+			case HEVC_RTP_NALU_Type::RASL_R:
+			case HEVC_RTP_NALU_Type::BLA_W_LP:
+			case HEVC_RTP_NALU_Type::BLA_W_RADL:
+			case HEVC_RTP_NALU_Type::BLA_N_LP:
+			case HEVC_RTP_NALU_Type::IDR_W_RADL:
+			case HEVC_RTP_NALU_Type::IDR_N_LP:
+			case HEVC_RTP_NALU_Type::CRA_NUT:
+				if (parsingFrameType && sps.has_value() && pps.has_value())
 				{
 					H265SliceHeader header;
 					if (header.Decode(nal + 2, nalSize - 2, nalUnitType, *pps, *sps))
@@ -347,7 +378,34 @@ std::unique_ptr<VideoFrame> RTMPH26xPacketizer<DescClass, SPSClass, PPSClass, co
 						parsingFrameType = false;
 					}
 				}
+				break;
+			case HEVC_RTP_NALU_Type::VPS:
+				// Skip if we already have vps inserted from the HEVCDescriptor. 
+				// Safari may complain about duplicated parameter sets.
+				skip = desc.GetNumOfVideoParameterSets() > 0;
+				break;
+			case HEVC_RTP_NALU_Type::SPS:
+				// Skip if we already have sps inserted from the HEVCDescriptor. 
+				// Safari may complain about duplicated parameter sets.
+				skip = desc.GetNumOfSequenceParameterSets() > 0;
+				break;
+			case HEVC_RTP_NALU_Type::PPS:
+				// Skip if we already have pps inserted from the HEVCDescriptor. 
+				// Safari may complain about duplicated parameter sets.
+				skip = desc.GetNumOfPictureParameterSets() > 0;
+				break;
+			default:
+				break;
 			}
+		}
+		
+		if (skip)
+		{
+			//Skip it
+			data += nalUnitLength + nalSize;
+			size -= nalUnitLength + nalSize;
+			//Next
+			continue;
 		}
 
 		//Append nal header

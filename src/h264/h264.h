@@ -41,6 +41,41 @@ static constexpr uint8_t  Log2MaxMvLengthVerticalMin = 0;
 static constexpr uint8_t  Log2MaxMvLengthVerticalMax = 16;
 static constexpr uint8_t  MaxDpbFrames = 16; // Lifted from FFMPEG
 
+enum class AvcNaluType {
+	Unspecified	= 0,
+	Slice		= 1,
+	Dpa		= 2,
+	Dpb		= 3,
+	Dpc		= 4,
+	IdrSlice	= 5,
+	Sei		= 6,
+	Sps		= 7,
+	Pps		= 8,
+	Aud		= 9,
+	EndSequence	= 10,
+	EndStream	= 11,
+	FillerData	= 12,
+	SpsExt		= 13,
+	Prefix		= 14,
+	SubSps		= 15,
+	Dps		= 16,
+	Reserved17	= 17,
+	Reserved18	= 18,
+	AuxiliarySlice 	= 19,
+	ExtenSlice	= 20,
+	DepthExtenSlice = 21,
+	Reserved22	= 22,
+	Reserved23	= 23,
+	Unspecified24	= 24,
+	Unspecified25	= 25,
+	Unspecified26	= 26,
+	Unspecified27	= 27,
+	Unspecified28	= 28,
+	Unspecified29	= 29,
+	Unspecified30	= 30,
+	Unspecified31	= 31,
+};
+
 class H264SeqParameterSet
 {
 public:
