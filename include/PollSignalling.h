@@ -5,24 +5,50 @@
 #include <atomic>
 #include <memory>
 
+class EventPipe
+{
+public:
+	EventPipe();
+	inline const FileDescriptor& GetReadFd () const
+	{
+#if __APPLE__
+		return pipeFds[0];
+#else
+		return eventFd;
+#endif
+	}
+	inline const FileDescriptor& GetWriteFd () const
+	{
+#if __APPLE__
+		return pipeFds[1];
+#else
+		return eventFd;
+#endif
+	}
+private:
+#if __APPLE__
+	FileDescriptor pipeFds[2];
+#else
+	FileDescriptor eventFd;
+#endif
+};
+
 /**
  * A class to wrap a pipe for poll signalling event.
 */
 class PollSignalling
 {
 public:
-	PollSignalling();
-	
 	void Signal();
 	void ClearSignal();
 	
 	inline int GetFd() const
 	{
-		return *pipeFds[0];
+		return eventPipe.GetReadFd();
 	}
 	
 private:
-	std::shared_ptr<FileDescriptor> pipeFds[2];
+	EventPipe eventPipe;
 	std::atomic_flag signaled = ATOMIC_FLAG_INIT;
 };
 
