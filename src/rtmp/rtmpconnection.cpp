@@ -199,8 +199,8 @@ int RTMPConnection::Run()
 		//If timed out
 		if (ret==0)
 		{
-			//Log and exit run loop
-			Log("-RTMPConnection::Run() Timedout [connection:%p]\n",this);
+			//Log timeout as an error and exit run loop
+			Error("-RTMPConnection::Run() Timed out [connection:%p] Timeout period %d ms \n",this, PoolTimeout);
 			break;
 		}
 			
