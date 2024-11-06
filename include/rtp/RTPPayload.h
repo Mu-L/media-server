@@ -15,7 +15,8 @@ public:
 	bool SetPayload(const BYTE *data,DWORD size);
 	bool SetPayload(const RTPPayload& other);
 	bool SkipPayload(DWORD skip);
-	bool PrefixPayload(BYTE *data,DWORD size);
+	bool PrefixPayload(const BYTE *data,DWORD size);
+	bool AppendPayload(const BYTE* data, DWORD size);
 	
 	BYTE* GetMediaData()			{ return payload;		}
 	const BYTE* GetMediaData()	const	{ return payload;		}

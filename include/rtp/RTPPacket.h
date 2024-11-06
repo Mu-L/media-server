@@ -36,9 +36,10 @@ public:
 	
 	DWORD Serialize(BYTE* data,DWORD size,const RTPMap& extMap) const;
 	
-	bool SetPayload(const BYTE *data,DWORD size)	{ return payload->SetPayload(data,size);	}
-	bool SkipPayload(DWORD skip)			{ return payload->SkipPayload(skip);		}
-	bool PrefixPayload(BYTE *data,DWORD size)	{ return payload->PrefixPayload(data,size);	}
+	bool SetPayload(const BYTE *data,DWORD size)		{ return payload->SetPayload(data,size);	}
+	bool SkipPayload(DWORD skip)				{ return payload->SkipPayload(skip);		}
+	bool PrefixPayload(const BYTE *data,DWORD size)		{ return payload->PrefixPayload(data,size);	}
+	bool AppendPayload(const BYTE* data, DWORD size)	{ return payload->AppendPayload(data, size);	}
 	
 	bool RecoverOSN();
 	void SetOSN(DWORD extSeqNum);

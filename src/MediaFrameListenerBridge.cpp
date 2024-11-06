@@ -423,13 +423,69 @@ void  MediaFrameListenerBridge::onMediaFrameAsync(std::chrono::milliseconds now,
 		if (rtp.GetTotalLength()>packet->GetMaxMediaLength())
 			//Error
 			continue;
+
+		//Try to aggreate multiple NALs into a single STAP-A packet for H264
+                if (frame->GetType() == MediaFrame::Video && codec == VideoCodec::H264)
+                {
+                        //STAP-A header
+                        size_t length = 1;
+			//Last rtp packet included in the STAP-A
+			size_t last = 0;
+                        //Check next frame length
+			for (size_t j = i; j < info.size(); j++)
+                        {
+                                //Get packet
+                                const MediaFrame::RtpPacketization& rtp = info[j];
+                                //Check if we can aggregate in a single packet and it is not a fragmented packet
+                                if (rtp.GetPrefixLen() || length + rtp.GetSize() + 2 > RTPPAYLOADSIZE)
+                                        break;
+                                //Increase length
+                                length += rtp.GetSize() + 2;
+                                //Include this packet in the stap-a 
+				last = j;
+                        }
+
+                        //If we can aggregate more than one packet
+                        if (last>i)
+                        {
+                                //Add STAP-A header
+                                uint8_t stapA = 0x78;
+                                //Set NAL header
+                                packet->AppendPayload(&stapA, sizeof(stapA));
+				//Aggregate packets
+				for (size_t j = i; j <= last; j++)
+				{
+					//Get rtp packet
+					const MediaFrame::RtpPacketization& rtp = info[j];
+					//Calculate length
+					uint8_t len[2] = {};
+					//Calculate STAP-A aggregation length
+					set2 (len, 0, rtp.GetSize ());
+					//Set it
+					packet->AppendPayload (len, sizeof (len));
+					//Set NAL data
+					packet->AppendPayload (frameData + rtp.GetPos (), rtp.GetSize ());
+				}
+				//Skip aggregated packets
+				i = last;
+                        } else {
+                                //Set data
+                                packet->SetPayload(frameData + rtp.GetPos(), rtp.GetSize());
+                                //Add prefix
+                                packet->PrefixPayload(rtp.GetPrefixData(), rtp.GetPrefixLen());
+                        }
+                } else {
+                        //Set data
+                        packet->SetPayload(frameData + rtp.GetPos(), rtp.GetSize());
+                        //Add prefix
+                        packet->PrefixPayload(rtp.GetPrefixData(), rtp.GetPrefixLen());
+                }
+
 		//Set src
 		packet->SetSSRC(ssrc);
 		packet->SetExtSeqNum(extSeqNum++);
-		//Set data
-		packet->SetPayload(frameData+rtp.GetPos(),rtp.GetSize());
-		//Add prefix
-		packet->PrefixPayload(rtp.GetPrefixData(),rtp.GetPrefixLen());
+
+		
 		//Calculate timestamp
 		lastTimestamp = baseTimestamp + (frame->GetTimeStamp()-firstTimestamp);
 		//Set other values
