@@ -205,8 +205,10 @@ inline std::optional<DWORD> NalEscapeRbsp(BYTE *dst, DWORD dstsize, const BYTE *
 	return std::optional(len);
 }
 
-inline void NalSliceAnnexB(BufferReader& reader, std::function<void(BufferReader& nalReader)> onNalu)
+inline std::vector<BufferReader> ParseNalSliceAnnexB(BufferReader& reader)
 {
+	std::vector<BufferReader> nalus;
+
 	//Start of current nal unit
 	uint32_t start = std::numeric_limits<uint32_t>::max();
 	
@@ -228,20 +230,9 @@ inline void NalSliceAnnexB(BufferReader& reader, std::function<void(BufferReader
 
 			//If we have a nal unit
 			if (end > start)
-			{
 				//Get nalu reader
-				BufferReader nalu = reader.GetReader(start, end - start);
+				nalus.push_back(reader.GetReader(start, end - start));
 
-				try 
-				{
-					//Process current NALU
-					onNalu(nalu);
-				}
-				catch (const std::exception& e)
-				{
-					Warning("-NalSliceAnnexB() exception on onNalu()\n");
-				}
-			}
 			//Skip start code
 			reader.Skip(startCodeLength);
 			//Begin new NALU
@@ -257,19 +248,10 @@ inline void NalSliceAnnexB(BufferReader& reader, std::function<void(BufferReader
 
 	//If we have a nal unit
 	if (end > start)
-	{
 		//Get nalu reader
-		BufferReader nalu = reader.GetReader(start, end - start);
-		try
-		{
-			//Process current NALU
-			onNalu(nalu);
-		}
-		catch (const std::exception& e)
-		{
-			Warning("-NalSliceAnnexB() exception on onNalu()\n");
-		}
-	}
+		nalus.push_back(reader.GetReader(start, end - start));
+
+	return nalus;
 }
 
 inline void NalToAnnexB(BYTE* data, DWORD size)

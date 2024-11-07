@@ -80,9 +80,8 @@ std::unique_ptr<MediaFrame> H26xPacketizer::ProcessAU(BufferReader& reader)
 		currentFrame = std::make_unique<VideoFrame>(static_cast<VideoCodec::Type>(codec), reader.GetLeft());
 
 	std::optional<bool> frameEnd;
-	NalSliceAnnexB(reader
-		, [&](auto nalReader){OnNal(*currentFrame, nalReader, frameEnd);}
-	);
+	for (auto& nalReader : ParseNalSliceAnnexB(reader))
+		OnNal(*currentFrame, nalReader, frameEnd);
 	
 	// If frame end is not got, regard it as the frame complete.
 	if (frameEnd.has_value() && !frameEnd.value())

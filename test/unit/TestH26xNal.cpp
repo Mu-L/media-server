@@ -30,12 +30,11 @@ TEST(TestH26xNal, NalSliceAnnexB)
 
 	int nalCount = 0;
 	BufferReader reader(annnexB);
-	NalSliceAnnexB(reader, [&](BufferReader& nalReader) {
-		ASSERT_LT(nalCount, nals.size());
-		EXPECT_EQ(nalReader.GetLeft(), nals[nalCount].second);
-		nalCount++;
-	});
+	std::vector< BufferReader> parsed = ParseNalSliceAnnexB (reader);
+	ASSERT_EQ (parsed.size(), nals.size());
+	for (size_t i = 0; i < parsed.size(); ++i)
+		EXPECT_EQ (parsed[i].GetLeft(), nals[i].second);
 	
-	EXPECT_EQ(nalCount,nals.size());
+
 
 }
