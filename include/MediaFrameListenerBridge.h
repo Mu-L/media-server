@@ -84,9 +84,9 @@ private:
 	void onMediaFrameAsync(std::chrono::milliseconds now, DWORD ignored, const std::shared_ptr<MediaFrame>& frame);
 	void Dispatch(std::chrono::milliseconds now);
 	void Update(std::chrono::milliseconds now);
-
 	void DispatchPackets(const std::vector<RTPPacket::shared>& packet);
-
+	void Packetize(const std::shared_ptr<MediaFrame>& frame, std::chrono::milliseconds scheduled);
+	void UpdateFrameInfoAndStats(const std::shared_ptr<MediaFrame>& frame, std::chrono::milliseconds now, std::chrono::milliseconds scheduled);
 	
 public:
 	Timer::shared dispatchTimer;
@@ -97,7 +97,7 @@ public:
 	DWORD extSeqNum = 0;
 	bool  smooth = true;
 	std::set<RTPIncomingMediaStream::Listener*> listeners;
-        std::set<MediaFrame::Listener::shared> mediaFrameListeners;
+	std::set<MediaFrame::Listener::shared> mediaFrameListeners;
 	volatile bool reset	= false;
 	QWORD firstTimestamp	= NoTimestamp;
 	QWORD baseTimestamp	= 0;
@@ -120,6 +120,8 @@ public:
 
 	MediaFrame::Type type = MediaFrame::Type::Unknown;
 	BYTE codec = -1;
+	DWORD rate = 1000;
+	DWORD pendingDuration = 0;
 
 	Acumulator<uint32_t, uint64_t> acumulator;
 	Acumulator<uint32_t, uint64_t> accumulatorFrames;

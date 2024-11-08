@@ -113,11 +113,11 @@ void MediaFrameListenerBridge::Stop()
 		//Dispatch RTP packets
 		DispatchPackets(pending);
 
-                //Updated last dispatched 
+		//Updated last dispatched 
 		lastSent = now;
 
 		//Cancel dispatch timer
-                dispatchTimer->Cancel();
+		dispatchTimer->Cancel();
 		
 		//TODO wait onMediaFrame end
 		for (auto listener : listeners)
@@ -272,93 +272,7 @@ void  MediaFrameListenerBridge::onMediaFrameAsync(std::chrono::milliseconds now,
 		//Reseted
 		reset = false;
 	}
-
-	//UPdate size for video
-	if (frame->GetType() == MediaFrame::Video)
-	{
-		//Convert
-		auto  videoFrame = std::static_pointer_cast<VideoFrame>(frame);
-			
-		if (videoFrame->GetWidth() != 0 && videoFrame->GetHeight() != 0)
-		{
-			//Set width and height
-			width = videoFrame->GetWidth();
-			height = videoFrame->GetHeight();
-		}
-
-		// Increase bframes
-		accumulatorBFrames.Update(now.count(), videoFrame->IsBFrame() ? 1 : 0);
-		// Increase iframes
-		accumulatorIFrames.Update(now.count(), videoFrame->IsIntra() ? 1 : 0);
-			
-		bool isPFrame = !(videoFrame->IsIntra() || videoFrame->IsBFrame());
-		accumulatorPFrames.Update(now.count(), isPFrame ? 1 : 0);
-	}
-
-	//Get info
-	const MediaFrame::RtpPacketizationInfo& info = frame->GetRtpPacketizationInfo();
-
-	const BYTE *frameData = NULL;
-	DWORD frameSize = 0;
-	QWORD rate = 1000;
-	uint32_t pendingDuration = 0;
-
-	//Depending on the type
-	type = frame->GetType();
-	switch(type)
-	{
-		case MediaFrame::Audio:
-		{
-			//get audio frame
-			AudioFrame* audio = (AudioFrame*)frame.get();
-			// Note: This may truncate UNKNOWN but we do that many places elsewhere treating -1 == 0xFF == UNKNOWN so being consistent here as well
-			codec = audio->GetCodec();
-			//Get data
-			frameData = audio->GetData();
-			//Get size
-			frameSize = audio->GetLength();
-			//Set correct clock rate for audio codec
-			rate = AudioCodec::GetClockRate(audio->GetCodec());
-
-			pendingDuration = frame->GetDuration() * 1000 / rate;
-			break;
-		}
-		case MediaFrame::Video:
-		{
-			//get Video frame
-			VideoFrame* video = (VideoFrame*)frame.get();
-			// Note: This may truncate UNKNOWN but we do that many places elsewhere treating -1 == 0xFF == UNKNOWN so being consistent here as well
-			codec = video->GetCodec();
-			//Get data
-			frameData = video->GetData();
-			//Get size
-			frameSize = video->GetLength();
-			//Set clock rate
-			rate = 90000;
-
-			//When transcoding video, we dont know the duration of the resulting frame and so it
-			//is 0. In this case we will estimate it based on the target fps which the transcoder
-			//does set and fall back to some default otherwise.
-			if (frame->GetDuration())
-			{
-				pendingDuration = frame->GetDuration() * 1000 / rate;
-			}
-			else if (video->GetTargetFps())
-			{
-				pendingDuration = 1000.0 / video->GetTargetFps();
-			}
-			else 
-			{
-				//Use a default of 8ms for smooth sending (max 125fps).
-				pendingDuration = 8;
-			}
-			break;
-		}
-		default:
-			return;
-
-	}
-		
+	
 	// Calculate the scheduled time
 	auto scheduled = now + dispatchingDelayMs;
 	if (!packets.empty())
@@ -366,26 +280,7 @@ void  MediaFrameListenerBridge::onMediaFrameAsync(std::chrono::milliseconds now,
 		// Ensure scheduled time increasing
 		scheduled = std::max(scheduled, packets.back().scheduled + std::chrono::milliseconds(1));
 	}
-
-	//Get frame reception time
-	uint64_t time = frame->GetTime();
-
-	//Increase stats
-	numFrames++;
-	totalBytes += frameSize;
-
-	//Increate accumulators.
-	accumulatorFrames.Update(now.count(),1);
-	//Update bitrate acumulator
-	acumulator.Update(now.count(),frameSize);
-
-	//Get scheduled time in ms
-	uint64_t ms = scheduled.count();
-	//Waiting time uses scheduled time
-	waited.Update(ms, ms>time ? ms-time : 0);
-	//Get bitrate in bps
-	bitrate = acumulator.GetInstant()*8;
-
+	UpdateFrameInfoAndStats(frame, now, scheduled);
 	//Check if it the first received packet
 	if (firstTimestamp==NoTimestamp)
 	{
@@ -402,6 +297,15 @@ void  MediaFrameListenerBridge::onMediaFrameAsync(std::chrono::milliseconds now,
 		firstTimestamp = frame->GetTimeStamp();
 		Log("-MediaFrameListenerBridge[%p]::onMediaFrame Handling frame: %llu Resetting firstTimestamp to: %llu\n", this, frame->GetTimestamp(), firstTimestamp);
 	}
+	
+	Packetize(frame, scheduled);
+}
+
+void MediaFrameListenerBridge::Packetize(const std::shared_ptr<MediaFrame>& frame, std::chrono::milliseconds scheduled)
+{
+	const MediaFrame::RtpPacketizationInfo& info = frame->GetRtpPacketizationInfo();
+	const BYTE *frameData = frame->GetData();
+	uint64_t time = frame->GetTime();
 
 	//Calculate total length
 	uint32_t pendingLength = 0;
@@ -425,33 +329,33 @@ void  MediaFrameListenerBridge::onMediaFrameAsync(std::chrono::milliseconds now,
 			continue;
 
 		//Try to aggreate multiple NALs into a single STAP-A packet for H264
-                if (frame->GetType() == MediaFrame::Video && codec == VideoCodec::H264)
-                {
-                        //STAP-A header
-                        size_t length = 1;
+		if (frame->GetType() == MediaFrame::Video && codec == VideoCodec::H264)
+		{
+			//STAP-A header
+			size_t length = 1;
 			//Last rtp packet included in the STAP-A
 			size_t last = 0;
-                        //Check next frame length
+			//Check next frame length
 			for (size_t j = i; j < info.size(); j++)
-                        {
-                                //Get packet
-                                const MediaFrame::RtpPacketization& rtp = info[j];
-                                //Check if we can aggregate in a single packet and it is not a fragmented packet
-                                if (rtp.GetPrefixLen() || length + rtp.GetSize() + 2 > RTPPAYLOADSIZE)
-                                        break;
-                                //Increase length
-                                length += rtp.GetSize() + 2;
-                                //Include this packet in the stap-a 
+			{
+				//Get packet
+				const MediaFrame::RtpPacketization& rtp = info[j];
+				//Check if we can aggregate in a single packet and it is not a fragmented packet
+				if (rtp.GetPrefixLen() || length + rtp.GetSize() + 2 > RTPPAYLOADSIZE)
+						break;
+				//Increase length
+				length += rtp.GetSize() + 2;
+				//Include this packet in the stap-a 
 				last = j;
-                        }
+			}
 
-                        //If we can aggregate more than one packet
-                        if (last>i)
-                        {
-                                //Add STAP-A header
-                                uint8_t stapA = 0x78;
-                                //Set NAL header
-                                packet->AppendPayload(&stapA, sizeof(stapA));
+			//If we can aggregate more than one packet
+			if (last>i)
+			{
+				//Add STAP-A header
+				uint8_t stapA = 0x78;
+				//Set NAL header
+				packet->AppendPayload(&stapA, sizeof(stapA));
 				//Aggregate packets
 				for (size_t j = i; j <= last; j++)
 				{
@@ -468,18 +372,18 @@ void  MediaFrameListenerBridge::onMediaFrameAsync(std::chrono::milliseconds now,
 				}
 				//Skip aggregated packets
 				i = last;
-                        } else {
-                                //Set data
-                                packet->SetPayload(frameData + rtp.GetPos(), rtp.GetSize());
-                                //Add prefix
-                                packet->PrefixPayload(rtp.GetPrefixData(), rtp.GetPrefixLen());
-                        }
-                } else {
-                        //Set data
-                        packet->SetPayload(frameData + rtp.GetPos(), rtp.GetSize());
-                        //Add prefix
-                        packet->PrefixPayload(rtp.GetPrefixData(), rtp.GetPrefixLen());
-                }
+			} else {
+					//Set data
+					packet->SetPayload(frameData + rtp.GetPos(), rtp.GetSize());
+					//Add prefix
+					packet->PrefixPayload(rtp.GetPrefixData(), rtp.GetPrefixLen());
+			}
+		} else {
+			//Set data
+			packet->SetPayload(frameData + rtp.GetPos(), rtp.GetSize());
+			//Add prefix
+			packet->PrefixPayload(rtp.GetPrefixData(), rtp.GetPrefixLen());
+		}
 
 		//Set src
 		packet->SetSSRC(ssrc);
@@ -569,6 +473,77 @@ void  MediaFrameListenerBridge::onMediaFrameAsync(std::chrono::milliseconds now,
 		pendingDuration -= packetDuration;
 
 	}
+}
+
+void MediaFrameListenerBridge::UpdateFrameInfoAndStats(const std::shared_ptr<MediaFrame>& frame, std::chrono::milliseconds now, std::chrono::milliseconds scheduled)
+{
+	type = frame->GetType();
+	uint32_t frameSize = 0;
+	uint64_t time = frame->GetTime();
+	uint64_t ms = scheduled.count();
+	switch(type)
+	{
+		case MediaFrame::Audio:
+		{
+			//get audio frame
+			auto audioFrame = std::static_pointer_cast<AudioFrame>(frame);
+			// Note: This may truncate UNKNOWN but we do that many places elsewhere treating -1 == 0xFF == UNKNOWN so being consistent here as well
+			codec = audioFrame->GetCodec();
+			frameSize = audioFrame->GetLength();
+			//Set correct clock rate for audio codec
+			rate = AudioCodec::GetClockRate(audioFrame->GetCodec());
+			pendingDuration = frame->GetDuration() * 1000 / rate;
+			break;
+		}
+		case MediaFrame::Video:
+		{
+			//get Video frame
+			auto videoFrame = std::static_pointer_cast<VideoFrame>(frame);
+			// Note: This may truncate UNKNOWN but we do that many places elsewhere treating -1 == 0xFF == UNKNOWN so being consistent here as well
+			codec = videoFrame->GetCodec();
+			//Set clock rate
+			rate = 90000;
+			frameSize = videoFrame->GetLength();
+			//When transcoding video, we dont know the duration of the resulting frame and so it
+			//is 0. In this case we will estimate it based on the target fps which the transcoder
+			//does set and fall back to some default otherwise.
+			if (frame->GetDuration())
+				pendingDuration = frame->GetDuration() * 1000 / rate;
+			else if (videoFrame->GetTargetFps())
+				pendingDuration = 1000.0 / videoFrame->GetTargetFps();
+			else 
+				//Use a default of 8ms for smooth sending (max 125fps).
+				pendingDuration = 8;
+			
+			if (videoFrame->GetWidth() != 0 && videoFrame->GetHeight() != 0)
+			{
+				//Set width and height
+				width = videoFrame->GetWidth();
+				height = videoFrame->GetHeight();
+			}
+
+			// Increase bframes
+			accumulatorBFrames.Update(now.count(), videoFrame->IsBFrame() ? 1 : 0);
+			// Increase iframes
+			accumulatorIFrames.Update(now.count(), videoFrame->IsIntra() ? 1 : 0);
+				
+			bool isPFrame = !(videoFrame->IsIntra() || videoFrame->IsBFrame());
+			accumulatorPFrames.Update(now.count(), isPFrame ? 1 : 0);
+			break;
+		}
+		default:
+			return;
+	}
+	numFrames++;
+	totalBytes += frameSize;
+	//Increate accumulators.
+	accumulatorFrames.Update(now.count(),1);
+	//Update bitrate acumulator
+	acumulator.Update(now.count(), frameSize);
+	//Waiting time uses scheduled time
+	waited.Update(ms, ms>time ? ms-time : 0);
+	//Get bitrate in bps
+	bitrate = acumulator.GetInstant()*8;
 }
 
 void MediaFrameListenerBridge::DispatchPackets(const std::vector<RTPPacket::shared>& packets)
