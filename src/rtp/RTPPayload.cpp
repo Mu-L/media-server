@@ -49,10 +49,10 @@ bool RTPPayload::PrefixPayload(const BYTE* data, DWORD size)
 		//Error
 		return false;
 	//Copy
-	memcpy (payload, data, size);
+	memcpy (payload-size, data, size);
 	//Set pointers
-	payload += size;
-	payloadLen -= size;
+	payload -= size;
+	payloadLen += size;
 	//good
 	return true;
 }
