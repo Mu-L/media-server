@@ -68,7 +68,7 @@ void free_cpu_set(cpu_set_t* s) {
 }
 #endif
 
-EventLoop::EventLoop(std::unique_ptr<Poll> poll) : poll(std::move(poll))
+EventLoop::EventLoop(std::unique_ptr<Poll> poll, int defaultTimeoutMs) : poll(std::move(poll)), defaultTimeoutMs(defaultTimeoutMs)
 {
 	Debug("-EventLoop::EventLoop() [this:%p]\n", this);
 }
@@ -241,8 +241,13 @@ bool EventLoop::Stop()
 		//Signal the thread this will cause the poll call to exit
 		Signal();
 
-		//Nulifi thread
-		thread.join();
+		//If we are on different thread
+		if (std::this_thread::get_id()!=thread.get_id())
+			//Join it
+			thread.join();
+		else
+			//Detach as we are ending ourselves
+			thread.detach();
 	}
 	
 	//Log
@@ -516,17 +521,24 @@ void EventLoop::Run(const std::chrono::milliseconds &duration)
 				poll->SetEventMask(fd, *events);
 		});
 		
-		//Until signaled or one each 10 seconds to prevent deadlocks
-		int timeout = GetNextTimeout(10E3, until);
+		//Until signaled or timeout reached to prevent deadlocks
+		int timeout = GetNextTimeout(until);
 
-		//UltraDebug(">EventLoop::Run() | poll timeout:%d timers:%d tasks:%d size:%d\n",timeout,timers.size(),tasks.size_approx(), sizeof(ufds) / sizeof(pollfd));
+		//UltraDebug(">EventLoop::Run() | poll timeout:%d timers:%d tasks:%d\n",timeout,timers.size(),tasks.size_approx());
 
 		//Wait for events
-		if (auto error = poll->Wait(timeout) != 0)
+		auto waitResult = poll->Wait(timeout);
+		switch (waitResult)
 		{
-			Error("Event poll wait failed. code: %d\n", error);
-			SetStopping(ToUType(PredefinedExitCode::WaitError));
-			break;
+			case Poll::WaitResult::Error:
+				Error("Event poll wait failed.\n");
+				SetStopping(ToUType(PredefinedExitCode::WaitError));
+				break;
+			case Poll::WaitResult::Timeout:
+				OnPollTimeout();
+				break;
+			default:
+				break;
 		}
 		
 		if (!running) break;
@@ -567,9 +579,9 @@ void EventLoop::Run(const std::chrono::milliseconds &duration)
 	//Log("<EventLoop::Run()\n");
 }
 
-int EventLoop::GetNextTimeout(int defaultTimeout, const std::chrono::milliseconds& until) const
+int EventLoop::GetNextTimeout(const std::chrono::milliseconds& until) const
 {
-	int timeout = defaultTimeout;
+	int timeout = defaultTimeoutMs;
 
 	//Check if we have any pending task to wait or exit poll inmediatelly
 	if (tasks.size_approx())
@@ -592,7 +604,7 @@ int EventLoop::GetNextTimeout(int defaultTimeout, const std::chrono::millisecond
 		timeout = until > now ? std::chrono::duration_cast<std::chrono::milliseconds>(until - now).count() : 0;
 	}
 
-	return std::min(timeout, defaultTimeout);
+	return std::min(timeout, defaultTimeoutMs);
 }
 
 void EventLoop::ProcessTasks(const std::chrono::milliseconds& now)

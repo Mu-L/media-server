@@ -197,9 +197,12 @@ int RTMPServer::Run()
 void RTMPServer::CreateConnection(int fd)
 {
 	//Create new RTMP connection
-	auto rtmp = std::make_shared<RTMPConnection>(this);
+	auto rtmp = std::make_shared<RTMPConnection>();
 
 	Log(">RTMPServer::CreateConnection() connection [fd:%d,%p]\n",fd,rtmp);
+	
+	// Set listener
+	rtmp->SetListener(this);
 
 	//Init connection
 	rtmp->Init(fd);
@@ -228,9 +231,15 @@ void RTMPServer::DeleteAllConnections()
 	ScopedLock lock(mutex);
 
 	//For all connections
+	//For all connections
 	for (auto &connection : connections)
+	{
+		// Clear listener
+		connection->SetListener(nullptr);
+		
 		//Stop it
 		connection->Stop();
+	}
 
 	//Clear all connections
 	connections.clear();
@@ -336,13 +345,20 @@ RTMPNetConnection::shared RTMPServer::OnConnect(const struct sockaddr_in& peerna
  * OnDisconnect
  *   Event launched from RTMPConnection to indicate that the connection stream has been disconnected
   *************************************/
-void RTMPServer::onDisconnect(const RTMPConnection::shared& con)
+void RTMPServer::onDisconnect(RTMPConnection* con)
 {
 	Log("-RTMPServer::onDisconnect() [%p,socket:%d]\n",con,con->GetSocket());
 
 	//Lock connection list
 	ScopedLock lock(mutex);
 	
-	//Remove from list
-	connections.erase(con);
+	//Find and remove from list
+	auto it = std::find_if(connections.begin(), connections.end(), [con](auto& connection) {
+		return connection.get() == con;
+	});
+	
+	if (it != connections.end())
+	{
+		connections.erase(it);
+	}
 }

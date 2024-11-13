@@ -34,6 +34,13 @@ public:
 		Out 	= 0x2,
 	};
 	
+	enum class WaitResult
+	{
+		Success,
+		Error,
+		Timeout
+	};
+	
 	virtual ~Poll() = default;
 
 	/**
@@ -65,9 +72,9 @@ public:
 	 * 
 	 * @param timeOutMs The time out, in milliseconds
 	 * 
-	 * @return The error code is a non-zero value in case of an error. Zero means no error.
+	 * @return The waited result
 	 */
-	virtual int Wait(uint32_t timeOutMs) = 0;
+	virtual WaitResult Wait(uint32_t timeOutMs) = 0;
 	
 	/**
 	 * Iterate through all the file descriptors

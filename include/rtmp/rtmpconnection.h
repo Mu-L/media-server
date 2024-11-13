@@ -1,29 +1,38 @@
 #ifndef _RTMPCONNECTION_H_
 #define _RTMPCONNECTION_H_
-#include <pthread.h>
-#include <sys/poll.h>
-#include <sys/socket.h>
 #include "config.h"
 #include "rtmp.h"
 #include "rtmpchunk.h"
 #include "rtmpmessage.h"
 #include "rtmpstream.h"
 #include "rtmpapplication.h"
-#include <pthread.h>
+#include "EventLoop.h"
+
+#include <sys/socket.h>
+
 #include <map>
 #include <memory>
-#include <thread>
-
+#include <atomic>
 
 class RTMPConnection :
 	public std::enable_shared_from_this<RTMPConnection>,
 	public RTMPNetConnection::Listener,
 	public RTMPMediaStream::Listener,
-	public RTMPNetStream::Listener
+	public RTMPNetStream::Listener,
+	public EventLoop
 {
 public:
 	using shared = std::shared_ptr<RTMPConnection>;
-
+	
+	enum class ExitCode
+	{
+		ReadError = 1,
+		ParseError = 2,
+		PollError = 3,
+		PollTimeout = 4,
+		Disconnected = 5
+	};
+	
 	class Listener
 	{
 	public:
@@ -37,15 +46,15 @@ public:
 			RTMPNetConnection::Listener *listener,
 			std::function<void(bool)> accept
 		) = 0;
-		virtual void onDisconnect(const RTMPConnection::shared& con) = 0;
+		virtual void onDisconnect(RTMPConnection* con) = 0;
 	};
 public:
-	RTMPConnection(Listener* listener);
+	RTMPConnection();
 	~RTMPConnection();
+	
+	void SetListener(Listener* listener);
 
 	int Init(int fd);
-	void Start();
-	void Stop();
 	int End();
 	
 	int GetSocket() { return socket; }
@@ -67,10 +76,17 @@ public:
 	virtual void onStreamReset(DWORD id) override;
 	virtual void onDetached(RTMPMediaStream *stream) override;
 	
+	void OnLoopEnter() override;
+	std::optional<uint16_t> GetPollEventMask(int fd) const override;
+	void OnPollIn(int fd) override;
+	void OnPollOut(int fd) override;
+	void OnPollTimeout() override;
+	void OnPollError(int fd, int errorCode) override;
+	void OnLoopExit(int exitCode) override;
+	
 	DWORD GetRTT()	{ return rtt; }
 protected:
 	
-	int Run();
 	void PingRequest();
 private:
 	void ParseData(BYTE *data,const DWORD size);
@@ -97,9 +113,7 @@ private:
 	typedef std::map<DWORD,RTMPNetStream::shared> RTMPNetStreams;
 private:
 	int socket;
-	pollfd ufds[1] = {};
 	volatile bool inited;
-	volatile bool running;
 	State state;
 
 	RTMPHandshake01 s01;
@@ -128,16 +142,14 @@ private:
 	DWORD maxChunkSize;
 	DWORD maxOutChunkSize;
 
-	std::thread thread;
-	pthread_mutex_t mutex;
-
 	RTMPNetConnection::shared app;
 	std::wstring	 appName;
 	RTMPNetStreams	 streams;
 	DWORD maxStreamId;
 	DWORD maxTransId;
 
-	Listener* listener;
+	std::mutex mutex;
+	Listener* listener = nullptr;
 
 	timeval startTime;
 	DWORD windowSize;
@@ -151,6 +163,11 @@ private:
 	DWORD bandCalc = 0;
 	
 	DWORD rtt = 0;
+	
+	uint16_t eventMask = 0;
+	
+	static constexpr unsigned int BufferSize = 1400;
+	mutable BYTE buffer[BufferSize];
 };
 
 #endif

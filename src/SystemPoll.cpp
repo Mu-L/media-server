@@ -159,7 +159,7 @@ std::pair<uint16_t, int> SystemPoll::GetEvents(int fd) const
 	return std::make_pair<>(events, 0);
 }
 
-int SystemPoll::Wait(uint32_t timeOutMs)
+Poll::WaitResult SystemPoll::Wait(uint32_t timeOutMs)
 {
 	if (sysfdsDirty)
 	{
@@ -182,10 +182,16 @@ int SystemPoll::Wait(uint32_t timeOutMs)
 	}
 	
 	// Wait for events
-	if (poll(syspfds.data(), syspfds.size(),timeOutMs) < 0)
+	auto ret = poll(syspfds.data(), syspfds.size(),timeOutMs);
+	if (ret < 0)
 	{
-		Error("-SystemPoll::Wait() | poll() error. errno: %d\n", errno);
-		return -1;
+		Error("-SystemPoll::Wait() | poll() error. error: %s\n", strerror(errno));
+		return Poll::WaitResult::Error;
+	}
+	else if (ret == 0)
+	{
+		// Times out
+		return WaitResult::Timeout;
 	}
 	
 	// Copy back
@@ -198,7 +204,7 @@ int SystemPoll::Wait(uint32_t timeOutMs)
 			{
 				signalling.ClearSignal();
 				Error("-SystemPoll::Wait() | Error events: 0x%x fd: %d errno: %d\n", revents, syspfds[i].fd, errno);
-				return -1;
+				return Poll::WaitResult::Error;
 			}
 			else if (revents & POLLIN)
 			{
@@ -210,6 +216,7 @@ int SystemPoll::Wait(uint32_t timeOutMs)
 		pfds[indices[i]] = syspfds[i];
 	}
 
-	return 0;
+	// Waited event
+	return Poll::WaitResult::Success;
 }
 

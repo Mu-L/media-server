@@ -24,7 +24,7 @@ public:
 	bool AddFd(int fd) override;
 	bool RemoveFd(int fd) override;
 	void Clear() override;
-	int Wait(uint32_t timeOutMs) override;
+	WaitResult Wait(uint32_t timeOutMs) override;
 	bool SetEventMask(int fd, uint16_t eventMask) override;
 
 	void ForEachFd(std::function<void(int)> func) override;

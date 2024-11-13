@@ -52,7 +52,7 @@ private:
 	};
 	
 public:
-	EventLoop(std::unique_ptr<Poll> poll = std::make_unique<SystemPoll>());
+	EventLoop(std::unique_ptr<Poll> poll = std::make_unique<SystemPoll>(), int defaultTimeoutMs = 10E3);
 	virtual ~EventLoop();
 	
 	bool StartWithLoop(std::function<void(void)> loop);
@@ -95,7 +95,7 @@ protected:
 	
 	void ProcessTasks(const std::chrono::milliseconds& now);
 	void ProcessTriggers(const std::chrono::milliseconds& now);
-	int  GetNextTimeout(int defaultTimeout, const std::chrono::milliseconds& until = std::chrono::milliseconds::max()) const;
+	int  GetNextTimeout(const std::chrono::milliseconds& until = std::chrono::milliseconds::max()) const;
 
 	const std::chrono::milliseconds Now();
 	
@@ -131,6 +131,11 @@ protected:
 	virtual void OnPollOut(int fd) {};
 	
 	/**
+	 * Callback to be called when poll waiting times out
+	 */
+	virtual void OnPollTimeout() {};
+	
+	/**
 	 * Callback to be called when error occured on the file descriptor.
 	 */
 	virtual void OnPollError(int fd, int errorCode) {};
@@ -149,6 +154,7 @@ private:
 
 	std::thread			thread;
 	std::unique_ptr<Poll>		poll;
+	int				defaultTimeoutMs = 10E3;
 	volatile bool	running		= false;
 	std::chrono::milliseconds now	= 0ms;
 	moodycamel::ConcurrentQueue<
