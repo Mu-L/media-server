@@ -11,5 +11,8 @@
 		"include/",
 		"ext/"
 	],
+	"scripts": {
+		"test": "mkdir -p build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Debug && cmake --build . -j 8 &&  ./MediaServerUnitTest --gtest_output=xml:../test_results.xml && ./MediaServerLegacyTest"
+	},
 	"repository": "https://github.com/medooze/media-server.git"
 }
