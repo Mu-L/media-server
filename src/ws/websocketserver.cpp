@@ -87,12 +87,25 @@ int WebSocketServer::Run()
 init:
 	//Log
 	Log(">Run WebSocket Server [%p,port:%d]\n",this,serverPort);
+
 	//Create socket
 	server = socket(AF_INET, SOCK_STREAM, 0);
+	if (server < 0)
+		return Error("-WebSocketServer::Run() Can't create new server socket. reason: %s\n", strerror(errno));
 
 	//Set SO_REUSEADDR on a socket to true (1):
 	int optval = 1;
-	setsockopt(server, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
+	int result = setsockopt(server, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
+	if (result < 0)
+		Warning("-WebSocketServer::Run() Failed to set SO_REUSEADDR on socket. reason: %s\n", strerror(errno));
+
+	// See https://stackoverflow.com/questions/14388706/how-do-so-reuseaddr-and-so-reuseport-differ
+	// For macos docker we need the SO_REUSEPORT, we still include SO_REUSEADDR above to handle some
+	// edge cases of failure to bind (TIME_WAIT state from other sockets stopped for example)
+	optval = 1;
+	result = setsockopt(server, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval));
+	if (result < 0)
+		Warning("-WebSocketServer::Run() Failed to set SO_REUSEPORT on socket. reason: %s\n", strerror(errno));
 
 	//Bind to first available port
 	memset(&addr,0,sizeof(addr));
@@ -103,12 +116,12 @@ init:
 	//Bind
      	if (bind(server, (sockaddr *) &addr, sizeof(addr)) < 0)
 		//Error
-		return Error("Can't bind server socket. errno = %d.\n", errno);
+		return Error("-WebSocketServer::Run() Can't bind server socket to port %d. reason: %s\n", serverPort, strerror(errno);
 
 	//Listen for connections
 	if (listen(server,5)<0)
 		//Error
-		return Error("Can't listen on server socket. errno = %d\n", errno);
+		return Error("-WebSocketServer::Run() Can't listen on server socket to port %d. reason: %s\n", serverPort, strerror(errno));
 
 	//Set values for polling
 	ufds[0].fd = server;

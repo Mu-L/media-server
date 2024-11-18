@@ -71,12 +71,22 @@ int RTMPServer::BindServer()
 
 	//Create socket
 	server = socket(AF_INET, SOCK_STREAM, 0);
+	if (server < 0)
+		return Error("-RTMPServer::BindServer() Can't create new server socket. reason: %s\n", strerror(errno));
 
 	//Set SO_REUSEADDR on a socket to true (1):
 	int optval = 1;
-// Ignore coverity error: "this->server" is passed to a parameter that cannot be negative.
-// coverity[negative_returns]
-	(void)setsockopt(server, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
+	int result = setsockopt(server, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
+	if (result < 0)
+		Warning("-RTMPServer::BindServer() Failed to set SO_REUSEADDR on socket. reason: %s\n", strerror(errno));
+
+	// See https://stackoverflow.com/questions/14388706/how-do-so-reuseaddr-and-so-reuseport-differ
+	// For macos docker we need the SO_REUSEPORT, we still include SO_REUSEADDR above to handle some
+	// edge cases of failure to bind (TIME_WAIT state from other sockets stopped for example)
+	optval = 1;
+	result = setsockopt(server, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval));
+	if (result < 0)
+		Warning("-RTMPServer::BindServer() Failed to set SO_REUSEPORT on socket. reason: %s\n", strerror(errno));
 
 	//Bind to first available port
 	sockaddr_in addr;
@@ -88,12 +98,12 @@ int RTMPServer::BindServer()
 	//Bind
 	if (bind(server, (sockaddr*)&addr, sizeof(addr)) < 0)
 		//Error
-		return Error("-RTMPServer::BindServer() Can't bind server socket. errno = %d.\n", errno);
+		return Error("-RTMPServer::BindServer() Can't bind server socket to port %d. reason: %s\n", serverPort, strerror(errno));
 
 	//Listen for connections
 	if (listen(server, 5) < 0)
 		//Error
-		return Error("-RTMPServer::BindServer() Can't listen on server socket. errno = %d\n", errno);
+		return Error("-RTMPServer::BindServer() Can't listen on server socket to port %d. reason: %s\n", serverPort, strerror(errno));
 
 	//OK
 	return 1;
