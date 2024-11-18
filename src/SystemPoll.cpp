@@ -183,7 +183,10 @@ Poll::WaitResult SystemPoll::Wait(uint32_t timeOutMs)
 	
 	// Wait for events
 	auto ret = poll(syspfds.data(), syspfds.size(),timeOutMs);
-	if (ret < 0)
+
+	// If this thread happened to wakeup because it handled a signal that was delivered
+	// to it (EINTR) then we want to just re-enter the main loop and try again. 
+	if (ret < 0 && errno != EINTR)
 	{
 		Error("-SystemPoll::Wait() | poll() error. error: %s\n", strerror(errno));
 		return Poll::WaitResult::Error;

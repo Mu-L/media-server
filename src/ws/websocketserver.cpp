@@ -131,6 +131,11 @@ init:
 		//Wait for events
 		if (poll(ufds,1,-1)<0)
 		{
+			// If this thread happened to wakeup because it handled a signal that was delivered
+			// here then we want to just re-enter the main loop and try again
+			if (errno == EINTR)
+				continue;
+
 			//Error
 			Error("WebSocketServer: pool error [fd:%d,errno:%d]\n",ufds[0].fd,errno);
 			//Check if already inited

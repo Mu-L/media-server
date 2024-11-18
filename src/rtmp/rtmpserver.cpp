@@ -127,6 +127,11 @@ int RTMPServer::Run()
 		//Wait for events
 		if (poll(ufds,1,-1)<0)
 		{
+			// If this thread happened to wakeup because it handled a signal that was delivered
+			// here then we want to just re-enter the main loop and try again
+			if (errno == EINTR)
+				continue;
+
 			//Error
 			Error("-RTMPServer::Run() poll error [fd:%d,errno:%d]\n",ufds[0].fd,errno);
 			//Check if already inited
@@ -138,7 +143,6 @@ int RTMPServer::Run()
 				break;
 			//Contintue
 			continue;
-
 		}
 
 		//Chek events, will fail if closed by End() so we can exit
@@ -159,6 +163,11 @@ int RTMPServer::Run()
 
 		//Accpept incoming connections
 		int fd = accept(server,NULL,0);
+		while (fd < 0 && errno == EINTR)
+		{
+			UltraDebug("EINTR during accept trying again\n");
+			fd = accept(server,NULL,0);
+		}
 
 		//If error
 		if (fd<0)
