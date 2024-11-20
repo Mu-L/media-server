@@ -11,7 +11,7 @@ RTPOutgoingSource::RTPOutgoingSource() :
 	numFrames		= 0;
 	numFramesDelta		= 0;
 	lastTimestamp		= 0;
-	ssrc			= random();
+	ssrc			= 0;
 	extSeqNum		= random() & 0xFFFF;
 	lastSenderReport	= 0;
 	lastSenderReportNTP	= 0;
@@ -85,7 +85,7 @@ DWORD RTPOutgoingSource::NextExtSeqNum()
 void RTPOutgoingSource::Reset()
 {
 	RTPSource::Reset();
-	ssrc			= random();
+	ssrc			= 0;
 	extSeqNum		= random() & 0xFFFF;
 	time			= random();
 	numFrames		= 0;
@@ -106,9 +106,9 @@ void RTPOutgoingSource::Reset()
 	rtt			= 0;
 }
 
-void RTPOutgoingSource::Update(QWORD now,DWORD seqNum,DWORD size)
+void RTPOutgoingSource::Update(QWORD now,DWORD seqNum,DWORD size,DWORD overheadSize)
 {
-	RTPSource::Update(now,seqNum,size);
+	RTPSource::Update(now,seqNum,size,overheadSize);
 
 	//If not auotgenerated
 	if (!generatedSeqNum)
@@ -206,7 +206,7 @@ void RTPOutgoingSource::Update(QWORD now, const RTPHeader& header, DWORD size)
 	lastPayloadType = header.payloadType;
 
 	//Update stats
-	Update(now, header.sequenceNumber, size);
+	Update(now, header.sequenceNumber, size, header.GetSize());
 }
 
 void RTPOutgoingSource::SetLastTimestamp(QWORD now, QWORD timestamp)

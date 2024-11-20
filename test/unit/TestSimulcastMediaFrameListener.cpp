@@ -84,7 +84,7 @@ public:
 	static constexpr uint8_t	ALL_NON_INTRA = LOW | MID | HIGH;
 	static constexpr uint8_t	ALL_INTRA = LOW | MID | HIGH | INTRA;
 
-	FramePushHelper(SimulcastMediaFrameListener& listener, TestFrameGenerator &low, TestFrameGenerator &mid, TestFrameGenerator &high) :
+	FramePushHelper(const std::shared_ptr<SimulcastMediaFrameListener>& listener, TestFrameGenerator &low, TestFrameGenerator &mid, TestFrameGenerator &high) :
 		listener(listener),
 		low(low),
 		mid(mid),
@@ -101,19 +101,19 @@ public:
 			if (type & LOW)
 			{
 				auto frame = low.Generate(intra);
-				listener.onMediaFrame(frame->GetSSRC(), *frame);
+				listener->onMediaFrame(frame->GetSSRC(), *frame);
 			}
 
 			if (type & MID)
 			{
 				auto frame = mid.Generate(intra);
-				listener.onMediaFrame(frame->GetSSRC(), *frame);
+				listener->onMediaFrame(frame->GetSSRC(), *frame);
 			}
 
 			if (type & HIGH)
 			{
 				auto frame = high.Generate(intra);
-				listener.onMediaFrame(frame->GetSSRC(), *frame);
+				listener->onMediaFrame(frame->GetSSRC(), *frame);
 			}
 		}
 	}
@@ -123,7 +123,7 @@ private:
 	TestFrameGenerator &low;
 	TestFrameGenerator &mid;
 	TestFrameGenerator &high;
-	SimulcastMediaFrameListener &listener;
+	std::shared_ptr<SimulcastMediaFrameListener> listener;
 };
 
 class TestMediaFrameListner: public MediaFrame::Listener
@@ -149,15 +149,15 @@ class TestSimulcastMediaFrameListener : public ::testing::Test
 public:
 	TestSimulcastMediaFrameListener() :
 		timerService(),
-		listener(timerService, 0, 3),
+		listener(SimulcastMediaFrameListener::Create(timerService, 0, 3)),
 		mediaFrameListener(new TestMediaFrameListner)
 	{
-		listener.AddMediaListener(mediaFrameListener);
+		listener->AddMediaListener(mediaFrameListener);
 	}
 
 	void PushFrame(std::unique_ptr<VideoFrame> frame)
 	{
-		listener.onMediaFrame(frame->GetSSRC(), *frame);
+		listener->onMediaFrame(frame->GetSSRC(), *frame);
 	}
 
 	void PushFrame(const FrameInput& input)
@@ -172,7 +172,7 @@ public:
 		frame->SetLength(input.width*input.width);
 		frame->SetClockRate(ClockRate);
 
-		listener.onMediaFrame(frame->GetSSRC(), *frame);
+		listener->onMediaFrame(frame->GetSSRC(), *frame);
 	}
 
 	void CheckResetForwardedFrames(const std::vector<std::tuple<uint32_t, uint64_t, uint64_t>>& expected)
@@ -204,7 +204,7 @@ public:
 protected:
 	TestTimeService timerService;
 	std::shared_ptr<TestMediaFrameListner> mediaFrameListener;
-	SimulcastMediaFrameListener listener;
+	std::shared_ptr<SimulcastMediaFrameListener> listener;
 };
 
 
@@ -226,7 +226,7 @@ TEST_F(TestSimulcastMediaFrameListener, LayerSelection)
 	ASSERT_NO_FATAL_FAILURE(CheckResetForwardedFrames(expectedFrames));
 
 	// Change to just one layer
-	listener.SetNumLayers(1);
+	listener->SetNumLayers(1);
 	low.Reset();
 
 	// Test the frame will be forwarded immediately
@@ -235,7 +235,7 @@ TEST_F(TestSimulcastMediaFrameListener, LayerSelection)
 	ASSERT_NO_FATAL_FAILURE(CheckResetForwardedFrames(expectedFrames));
 
 	// Change to two layers
-	listener.SetNumLayers(2);
+	listener->SetNumLayers(2);
 	low.Reset();
 	high.Reset();
 

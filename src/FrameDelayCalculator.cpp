@@ -1,31 +1,19 @@
 #include "FrameDelayCalculator.h"
 #include <iostream>
+#include <chrono>
+#include "log.h"
+
+using namespace std::chrono;
+
 namespace
 {
-
-/**
- * Convert timestamp from one clock rate to another
- * 
- * @param ts The input timestamp
- * @param originalRate The clock rate of the input timestamp
- * @param targetRate The target clock rate
- * 
- * @return The timestamp basing on the target clock rate
- */
-template<typename T>
-static constexpr T convertTimestampClockRate(T ts, uint64_t originalRate, uint64_t targetRate)
-{
-	static_assert(sizeof(T) >= 8);
-	return originalRate == targetRate ? ts : (ts * T(targetRate) / T(originalRate));
-}
-
 static constexpr uint64_t UnifiedClockRate = 90 * 1000;
+static constexpr uint64_t MaxClockDesync = 100 * UnifiedClockRate; //100s
 }
 
-FrameDelayCalculator::FrameDelayCalculator(int aUpdateRefsPacketEarlyThresholdMs,
-					int aUpdateRefsPacketLateThresholdMs, 
-					std::chrono::milliseconds aUpdateRefsStepPacketEarlyMs) :
-	updateRefsPacketEarlyThresholdMs(aUpdateRefsPacketEarlyThresholdMs),
+FrameDelayCalculator::FrameDelayCalculator(int aUpdateRefsPacketLateThresholdMs, 
+					std::chrono::milliseconds aUpdateRefsStepPacketEarlyMs, TimeService& timeService) :
+	TimeServiceWrapper<FrameDelayCalculator>(timeService),
 	updateRefsPacketLateThresholdMs(aUpdateRefsPacketLateThresholdMs),
 	updateRefsStepPacketEarlyMs(aUpdateRefsStepPacketEarlyMs)
 {
@@ -33,72 +21,134 @@ FrameDelayCalculator::FrameDelayCalculator(int aUpdateRefsPacketEarlyThresholdMs
 
 std::chrono::milliseconds FrameDelayCalculator::OnFrame(uint64_t streamIdentifier, std::chrono::milliseconds now, uint64_t ts, uint64_t clockRate)
 {	
-	auto unifiedTs = convertTimestampClockRate(ts, clockRate, UnifiedClockRate);
-		
-	if (!initialized)
+	//Log("-FrameDelayCalculator::OnFrame() | [streamIdentifier:%lld,now:%lld,ts:%lld,clockRate:%lld,refTime:%lld,refTimestamp:%lld]\n", streamIdentifier, now.count(), ts, clockRate, refTime, refTimestamp);
+	
+	if (ts == 0) return 0ms;
+	
+	auto unifiedTs = ConvertTimestampClockRate(ts, clockRate, UnifiedClockRate);
+	
+	auto [refTime, refTimestamp] = reference.Get();
+	
+	if (state == State::Reset)
 	{
-		refTime = now;
-		refTimestamp = unifiedTs;
+		reference.Set(now, unifiedTs);
 		
-		initialized = true;			
-		return std::chrono::milliseconds(0);
+		state = State::Running;
+		return 0ms;
 	}
 			
 	// Note the lateMs could be negative when the frame arrives earlier than scheduled	
-	auto lateMs = GetFrameArrivalDelayMs(now, unifiedTs);
+	auto lateMs = GetFrameArrivalDelayMs(now, unifiedTs, refTime, refTimestamp);
 	
+	//Calculate the timestamp diff to ensure we are using same 
+	uint64_t timestampDiff = unifiedTs > refTimestamp ? unifiedTs - refTimestamp : refTimestamp - unifiedTs;
+
 	// We would delay the early arrived frame
 	std::chrono::milliseconds delayMs(-lateMs);
-	
-	if (lateMs > updateRefsPacketLateThresholdMs)  // Packet late
+	auto updateRefsPacketEarlyThresholdMs = -updateRefsStepPacketEarlyMs.count();
+
+	//Log("-FrameDelayCalculator::OnFrame() | [ts:%lld,late:%lld,delay:%lld,timestampDiff:%lld]\n", unifiedTs, lateMs, delayMs.count(), timestampDiff);
+
+	//If we detect a clock difference between the timestamps
+	if (timestampDiff > MaxClockDesync)
 	{
-		refTime = now;
-		refTimestamp = unifiedTs;
-		
-		// Stop reducing latency as a packet becomes late
-		reducingLatency = false;
-		delayMs = std::chrono::milliseconds(0);
+		//Reset calculator, we keep the refTimestamp so it is not set to the stream that has the jump
+		Warning("-FrameDelayCalculator::OnFrame() | Timestamp clock jump detected [diff:%llu]\n",timestampDiff);
+		state = State::Reset;
 	}
-	else if (!reducingLatency && lateMs < updateRefsPacketEarlyThresholdMs)  // Packet early
+
+	bool early = false;
+	if (state == State::Reset || lateMs > updateRefsPacketLateThresholdMs)  // Packet late
 	{
+		reference.Set(now, unifiedTs);
+		
+		delayMs = 0ms;
+	}
+	else if (lateMs < updateRefsPacketEarlyThresholdMs)  // Packet early
+	{
+		early = true;
+	}
+	
+	// Asynchronously check if we can reduce latency if all frames comes early
+	AsyncSafe([=, state = state](auto) {
+		
+		if (state == State::Reset)
+		{
+			frameArrivalInfo.erase(streamIdentifier);
+			allEarlyStartTimeMs.reset();
+			return;
+		}
+		
+		frameArrivalInfo[streamIdentifier] = {now, unifiedTs};
+		
+		if (!early)
+		{
+			allEarlyStartTimeMs.reset();
+			return;
+		}
+		
 		// Loop to see if all the streams have arrived earlier
-		reducingLatency = std::all_of(frameArrivalInfo.begin(), frameArrivalInfo.end(), 
+		bool allEarly = std::all_of(frameArrivalInfo.begin(), frameArrivalInfo.end(), 
 			[&](const auto& info) {
 				if (info.first == streamIdentifier) return true;
 							
 				auto [time, timestamp] = info.second;
-				auto frameLateMs = GetFrameArrivalDelayMs(time, timestamp);
+				auto frameLateMs = GetFrameArrivalDelayMs(time, timestamp, refTime, refTimestamp);
 				
 				return frameLateMs < updateRefsPacketEarlyThresholdMs;
 			});
-	}
-	else if (reducingLatency && lateMs > -updateRefsStepPacketEarlyMs.count())
-	{
-		// Stop reducing latency otherwise the frame would be regarded as late if we
-		// do a further step of latency reduction.
-		reducingLatency = false;
-	}
-
-	frameArrivalInfo[streamIdentifier] = {now, unifiedTs};
+			
+		if (allEarly)
+		{
+			if (!allEarlyStartTimeMs.has_value())
+				allEarlyStartTimeMs = now;
 				
-	if (reducingLatency)
-	{
-		// Make reference time earlier for same time stamp, which means
-		// frames will be dispatched ealier.
-		refTime -= updateRefsStepPacketEarlyMs;
-		
-		// Reduce the delay
-		delayMs -= updateRefsStepPacketEarlyMs;
-	}
+			// If all stream becomes ealier for a while (> 2s), we reduce the latency
+			if ((now - *allEarlyStartTimeMs) > 2000ms)
+			{
+				// Make reference time earlier for same time stamp, which means
+				// frames will be dispatched ealier.
+				reference.Set(refTime - updateRefsStepPacketEarlyMs, refTimestamp);
+
+				// Restart the latency reduction process to have a max reduction rate
+				// at 20ms per second as we don't expect the latency would be too large,
+				// which normall would be below 1 second.
+				allEarlyStartTimeMs.reset();
+			}
+		}
+		else
+		{
+			allEarlyStartTimeMs.reset();
+		}
+	});
 	
-	return std::max(delayMs, std::chrono::milliseconds(0));
+	return std::max(delayMs, 0ms);
 }
 
-int64_t FrameDelayCalculator::GetFrameArrivalDelayMs(std::chrono::milliseconds now, uint64_t unifiedTs) const
+int64_t FrameDelayCalculator::GetFrameArrivalDelayMs(std::chrono::milliseconds now, uint64_t unifiedTs, std::chrono::milliseconds refTime, uint64_t refTimestamp)
 {	
 	constexpr int64_t MsToTimestampFactor = UnifiedClockRate / 1000;
 	auto scheduledMs = (int64_t(unifiedTs) - int64_t(refTimestamp)) / MsToTimestampFactor + refTime.count();
 	auto actualTimeMs = now.count();
 
 	return actualTimeMs - scheduledMs;
+}
+
+std::pair<std::chrono::milliseconds, uint64_t> FrameDelayCalculator::Reference::Get()
+{
+	static_assert(sizeof(ReferenceField) == 16);
+	static_assert(sizeof(ReferenceField::value) == 16);
+	static_assert(sizeof(ReferenceField::content) == 16);
+	
+	ReferenceField currentRef;
+	currentRef.value = __sync_fetch_and_add(&field, 0);
+	
+	return { std::chrono::milliseconds(currentRef.content.refTime), currentRef.content.refTimestamp };
+}
+
+void FrameDelayCalculator::Reference::Set(std::chrono::milliseconds refTime, uint64_t refTimestamp)
+{
+	ReferenceField newRef = {{refTime.count(), refTimestamp}};
+	
+	SyncWriteUint128(&field, newRef.value);
 }

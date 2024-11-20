@@ -8,7 +8,7 @@
 using namespace std::chrono_literals;
 
 RTPIncomingSourceGroup::RTPIncomingSourceGroup(MediaFrame::Type type,TimeService& timeService) :
-	timeService(timeService),
+	TimeServiceWrapper<RTPIncomingSourceGroup>(timeService),
 	losts(1024)
 {
 	//Store type
@@ -41,7 +41,7 @@ void RTPIncomingSourceGroup::AddListener(RTPIncomingMediaStream::Listener* liste
 	Debug("-RTPIncomingSourceGroup::AddListener() [listener:%p]\n",listener);
 	
 	//Add it sync
-	timeService.Async([=](auto){
+	AsyncSafe([=](auto){
 		listeners.insert(listener);
 	});
 }
@@ -51,7 +51,7 @@ void RTPIncomingSourceGroup::RemoveListener(RTPIncomingMediaStream::Listener* li
 	Debug("-RTPIncomingSourceGroup::RemoveListener() [listener:%p]\n",listener);
 	
 	//Remove it sync
-	timeService.Sync([=](auto) {
+	Sync([=](auto) {
 		listeners.erase(listener);
 	});
 }
@@ -96,7 +96,10 @@ int RTPIncomingSourceGroup::AddPacket(const RTPPacket::shared &packet, DWORD siz
 		//Update lost
 		if (lost) remoteRateEstimator.UpdateLost(media.ssrc,lost,now);
 	}
-	
+
+	// Note: This may truncate UNKNOWN but we do that many places elsewhere treating -1 == 0xFF == UNKNOWN so being consistent here as well
+	codec = packet->GetCodec();
+
 	//Add to packet queue
 	if (!packets.Add(packet))
 		//Rejected packet
@@ -143,7 +146,7 @@ void RTPIncomingSourceGroup::Bye(DWORD ssrc)
 		//Reset 
 		{
 			//Add it sync
-			timeService.Sync([=](auto) {
+			Sync([=](auto) {
 				//Deliver to all listeners
 				for (auto listener : listeners)
 					//Dispatch rtp packet
@@ -167,7 +170,7 @@ void RTPIncomingSourceGroup::Update()
 	TRACE_EVENT("rtp", "RTPIncomingSourceGroup::Update");
 
 	//Update it sync
-	timeService.Sync([=](std::chrono::milliseconds now) {
+	Sync([=](std::chrono::milliseconds now) {
 		//Set last updated time
 		lastUpdated = now.count();
 		//Update
@@ -183,7 +186,7 @@ void RTPIncomingSourceGroup::UpdateAsync(std::function<void(std::chrono::millise
 	TRACE_EVENT("rtp", "RTPIncomingSourceGroup::Update");
 
 	//Update it sync
-	timeService.Async([=](std::chrono::milliseconds now) {
+	AsyncSafe([=](std::chrono::milliseconds now) {
 		//Set last updated time
 		lastUpdated = now.count();
 		//Update
@@ -196,7 +199,7 @@ void RTPIncomingSourceGroup::UpdateAsync(std::function<void(std::chrono::millise
 void RTPIncomingSourceGroup::SetMaxWaitTime(DWORD maxWaitingTime)
 {
 	//Update it sync
-	timeService.Async([=](std::chrono::milliseconds now) {
+	AsyncSafe([=](std::chrono::milliseconds now) {
 		//Set it
 		packets.SetMaxWaitTime(maxWaitingTime);
 		//Store overriden value
@@ -207,7 +210,7 @@ void RTPIncomingSourceGroup::SetMaxWaitTime(DWORD maxWaitingTime)
 void RTPIncomingSourceGroup::ResetMaxWaitTime()
 {
 	//Update it sync
-	timeService.Async([=](std::chrono::milliseconds now) {
+	AsyncSafe([=](std::chrono::milliseconds now) {
 		//Remove override
 		maxWaitingTime.reset();
 	});
@@ -252,7 +255,7 @@ void RTPIncomingSourceGroup::Start(bool remb)
 	Debug("-RTPIncomingSourceGroup::Start() | [remb:%d]\n",remb);
 
 	//Create dispatch timer
-	dispatchTimer = timeService.CreateTimer([this](auto now) { DispatchPackets(now.count()); });
+	dispatchTimer = CreateTimerSafe([this](auto now) { DispatchPackets(now.count()); });
 	//Set name for debug
 	dispatchTimer->SetName("RTPIncomingSourceGroup - dispatch");
 	
@@ -320,7 +323,7 @@ void RTPIncomingSourceGroup::Stop()
 	if (dispatchTimer) dispatchTimer->Cancel();
 
 	//Stop listeners sync
-	timeService.Sync([=](auto) {
+	Sync([=](auto) {
 		//Deliver to all listeners
 		for (auto listener : listeners)
 			//Dispatch rtp packet
@@ -372,14 +375,14 @@ RTPIncomingSource* RTPIncomingSourceGroup::Process(RTPPacket::shared &packet)
 	//Set clockrate
 	source->clockrate = packet->GetClockRate();
 	
-	//if it is video
-	if (type == MediaFrame::Video)
+	//if it is the main video source
+	if (type == MediaFrame::Video && source==&media)
 	{
 		//Check if we can ge the layer info
 		auto info = VideoLayerSelector::GetLayerIds(packet);
 		//UltraDebug("-RTPIncomingSourceGroup::Process() | [id:%x,tid:%u,sid:%u]\n",info.GetId(),info.temporalLayerId,info.spatialLayerId);
 		//Update source and layer info
-		source->Update(time, packet->GetSeqNum(), packet->GetRTPHeader().GetSize() + packet->GetMediaLength(), info, VideoLayerSelector::AreLayersInfoeAggregated(packet), packet->GetVideoLayersAllocation());
+		source->Update(time, packet->GetSeqNum(), packet->GetMediaLength(), packet->GetRTPHeader().GetSize(), info, VideoLayerSelector::AreLayersInfoeAggregated(packet), packet->GetVideoLayersAllocation());
 		
 		//If we have new size
 		if (packet->GetWidth() && packet->GetHeight())
@@ -391,7 +394,7 @@ RTPIncomingSource* RTPIncomingSourceGroup::Process(RTPPacket::shared &packet)
 		}
 	} else {
 		//Update source and layer info
-		source->Update(time, packet->GetSeqNum(), packet->GetRTPHeader().GetSize() + packet->GetMediaLength());
+		source->Update(time, packet->GetSeqNum(), packet->GetMediaLength(), packet->GetRTPHeader().GetSize());
 	}
 	
 	if (source==&media)

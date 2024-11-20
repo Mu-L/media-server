@@ -23,6 +23,8 @@ VP8Depacketizer::VP8Depacketizer() : RTPDepacketizer(MediaFrame::Video,VideoCode
 	config.Serialize(frame.GetCodecConfigData(),frame.GetCodecConfigSize());
 	//Set clock rate
 	frame.SetClockRate(90000);
+	//Disable shared buffer
+	frame.DisableSharedBuffer();
 }
 
 VP8Depacketizer::~VP8Depacketizer()
@@ -64,7 +66,11 @@ MediaFrame* VP8Depacketizer::AddPacket(const RTPPacket::shared& packet)
 		frame.SetTime(packet->GetTime());
 		//Set sender time
 		frame.SetSenderTime(packet->GetSenderTime());
+
+		// Presentation time == DTS as there are no B-frames in RTP at the moment
+		frame.SetPresentationTimestamp(packet->GetTimestamp());
 	}
+
 	//Set SSRC
 	frame.SetSSRC(packet->GetSSRC());
 

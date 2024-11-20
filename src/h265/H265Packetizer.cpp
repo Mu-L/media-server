@@ -13,18 +13,20 @@ void H265Packetizer::EmitNal(VideoFrame& frame, BufferReader nal)
 {
 	auto naluHeader = nal.Peek2();
 	BYTE nalUnitType = (naluHeader >> 9) & 0b111111;
-	BYTE nuh_layer_id = (naluHeader >> 3) & 0b111111;
-	BYTE nuh_temporal_id_plus1 = naluHeader & 0b111;
+	BYTE nalLayerId = (naluHeader >> 3) & 0b111111;
+	BYTE nalTemporalIdPlus1 = naluHeader & 0b111;
 
 	const uint16_t nalHeaderFU = ((uint16_t)(HEVC_RTP_NALU_Type::UNSPEC49_FU) << 9)
-		| ((uint16_t)(nuh_layer_id) << 3)
-		| ((uint16_t)(nuh_temporal_id_plus1));
+		| ((uint16_t)(nalLayerId) << 3)
+		| ((uint16_t)(nalTemporalIdPlus1));
 	std::string fuPrefix = {static_cast<char>((nalHeaderFU & 0xff00) >> 8), static_cast<char>(nalHeaderFU & 0xff), (char)nalUnitType};
 	H26xPacketizer::EmitNal(frame, nal, fuPrefix, HEVCParams::RTP_NAL_HEADER_SIZE);
 }
 
-void H265Packetizer::OnNal(VideoFrame& frame, BufferReader& reader)
+void H265Packetizer::OnNal(VideoFrame& frame, BufferReader& reader, std::optional<bool>& frameEnd)
 {
+	//@todo Set frameEnd as per slice header
+	
 	//UltraDebug("-H265Packetizer::OnNal()\n");
 	//Return if current NAL is empty
 	if (!reader.GetLeft())
@@ -63,7 +65,7 @@ void H265Packetizer::OnNal(VideoFrame& frame, BufferReader& reader)
 
 	if (nalUnitType >= HEVC_RTP_NALU_Type::UNSPEC48_AP)
 	{
-		Error("-H265Packetizer::OnNal() | got unspecified (>=48) NALU in a context where it is not allowed (nalUnitType: %d, nalSize: %d) \n", nalUnitType, nalSize);
+		Error("-H265Packetizer::OnNal() | got unspecified (>=48) NALU in a context where it is not allowed (nalUnitType: %u, nalSize: %zu) \n", nalUnitType, nalSize);
 		return;
 	}
 
@@ -111,16 +113,17 @@ void H265Packetizer::OnNal(VideoFrame& frame, BufferReader& reader)
 		case HEVC_RTP_NALU_Type::SPS:			// 33
 		{
 			//Parse sps
-			H265SeqParameterSet sps;
-			if (!sps.Decode(reader.PeekData(), reader.GetLeft()))
+			auto localSps = std::make_unique<H265SeqParameterSet>();
+			if (!localSps->Decode(reader.PeekData(), reader.GetLeft()))
 			{
 				Error("-H265Packetizer::OnNal() | Decode of SPS failed!\n");
 				break;
 			}
+			sps = std::move(localSps);
 
 			//Set dimensions
-			frame.SetWidth(sps.GetWidth());
-			frame.SetHeight(sps.GetHeight());
+			frame.SetWidth(sps->GetWidth());
+			frame.SetHeight(sps->GetHeight());
 
 			//UltraDebug("-H265 frame (with cropping) size [width: %d, frame height: %d]\n", sps.GetWidth(), sps.GetHeight());
 
@@ -137,6 +140,16 @@ void H265Packetizer::OnNal(VideoFrame& frame, BufferReader& reader)
 			return;
 		}
 		case HEVC_RTP_NALU_Type::PPS:			// 34
+		{
+			//Parse pps
+			auto localPps = std::make_unique<H265PictureParameterSet>();
+			if (!localPps->Decode(reader.PeekData(), reader.GetLeft()))
+			{
+				Error("-H265Packetizer::OnNal() | Decode of PPS failed!\n");
+				break;
+			}
+			pps = std::move(localPps);
+		
 			//Reset previous PPS only on the 1st PPS in current frame
 			if (noPPSInFrame)
 			{
@@ -148,6 +161,7 @@ void H265Packetizer::OnNal(VideoFrame& frame, BufferReader& reader)
 			//Add full nal to config
 			config.AddPictureParameterSet(nalUnit, nalSize);
 			return;
+		}
 		default:
 			//Debug("-H265 : Nothing to do for this NaluType nalu. Just forwarding it.(nalUnitType: %d, nalSize: %d)\n", nalUnitType, nalSize);
 			break;
@@ -162,7 +176,7 @@ void H265Packetizer::OnNal(VideoFrame& frame, BufferReader& reader)
 	// just before the first slice of the frame:
 	if (
 		// this NALU is a slice or SEI
-		((nalUnitType >= HEVC_RTP_NALU_Type::TRAIL_N && nalUnitType <= HEVC_RTP_NALU_Type::RASL_R)
+		((nalUnitType <= HEVC_RTP_NALU_Type::RASL_R)
 		 || (nalUnitType >= HEVC_RTP_NALU_Type::BLA_W_LP && nalUnitType <= HEVC_RTP_NALU_Type::CRA_NUT)
 		 || (nalUnitType == HEVC_RTP_NALU_Type::SEI_PREFIX) || (nalUnitType == HEVC_RTP_NALU_Type::SEI_SUFFIX))
 		// it belongs to an intra frame
@@ -215,13 +229,24 @@ void H265Packetizer::OnNal(VideoFrame& frame, BufferReader& reader)
 		frame.AllocateCodecConfig(config.GetSize());
 		config.Serialize(frame.GetCodecConfigData(), frame.GetCodecConfigSize());
 	}
+	
+	if (((nalUnitType <= HEVC_RTP_NALU_Type::RASL_R) || 
+	    (nalUnitType >= HEVC_RTP_NALU_Type::BLA_W_LP && nalUnitType <= HEVC_RTP_NALU_Type::CRA_NUT)) &&
+	    pps && sps)
+	{
+		H265SliceHeader header;
+		if (header.Decode(reader.PeekData(), reader.GetLeft(), nalUnitType, *pps, *sps))
+		{
+			frame.SetBFrame(header.GetSliceType() == 0);
+		}
+	}
 
 	EmitNal(frame, BufferReader(nalUnit, nalSize));
 }
 
 std::unique_ptr<MediaFrame> H265Packetizer::ProcessAU(BufferReader& reader)
 {
-	UltraDebug("-H265Packetizer::ProcessAU()| H265 AU [len:%d]\n", reader.GetLeft());
+	UltraDebug("-H265Packetizer::ProcessAU()| H265 AU [len:%zd]\n", reader.GetLeft());
 	noPPSInFrame = true;
 	noSPSInFrame = true;
 	noVPSInFrame = true;

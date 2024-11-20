@@ -7,7 +7,6 @@
 
 H265Decoder::H265Decoder() :
 	VideoDecoder(VideoCodec::H265),
-	depacketizer(true),
 	videoBufferPool(2,4)
 {
 	//Open libavcodec
@@ -48,35 +47,32 @@ H265Decoder::~H265Decoder()
 		av_frame_free(&picture);
 }
 
-int H265Decoder::DecodePacket(const BYTE* data, DWORD size, int lost, int last)
+
+int H265Decoder::Decode(const VideoFrame::const_shared& frame)
 {
-	//UltraDebug("-H265Decoder::DecodePacket() | packet size: %d, last: %d\n", size, last);
-
-	int ret = 1;
-
-	//Add to 
-	VideoFrame* frame = (VideoFrame*)depacketizer.AddPayload(data, size);
-
-	//Check last mark
-	if (last)
+	// if frame exists but no data in frame, the packet is considered as a flush packet
+	if (frame && frame->GetLength() > 0)
 	{
-		//If got frame
-		if (frame)
-			//Decode it
-			ret = Decode(frame->GetData(), frame->GetLength());
-		//Reset frame
-		depacketizer.ResetFrame();
+		//Copy nal data
+		annexb.SetData(*frame->GetBuffer());
+
+		//Convert to annex b
+		NalToAnnexB(annexb);
+
+		//Set data
+		packet->data = (uint8_t*)annexb.GetData();
+		packet->size = annexb.GetSize();
+	} else {
+		//No data
+		packet->data = nullptr;
+		packet->size = 0;
 	}
 
-	//Return ok
-	return ret;
-}
+	//Store frame num, it will be copied to the decoded avpacket
+	ctx->reordered_opaque = count++;
 
-int H265Decoder::Decode(const BYTE *data,DWORD size)
-{
-	//Set data
-	packet->data = (uint8_t*)data;
-	packet->size = size;
+	//Store frame reference
+	videoFrames.Set(ctx->reordered_opaque, frame);
 
 	//Decode it
 	if (avcodec_send_packet(ctx, packet) < 0)
@@ -85,25 +81,53 @@ int H265Decoder::Decode(const BYTE *data,DWORD size)
 		return Error("-H265Decoder::Decode() | Error decoding H265 packet\n");
 	}
 
+	//OK
+	return 1;
+}
+
+VideoBuffer::shared H265Decoder::GetFrame()
+{
+
 	//Check if we got any decoded frame
 	if (avcodec_receive_frame(ctx, picture) <0)
 	{
 		//No frame decoded yet
-		//UltraDebug("-H265Decoder::Decode() | got no frame out\n");
-		return 1;
+		return {};
 	}
 	
 	if(ctx->width==0 || ctx->height==0)
-		return Error("-H265Decoder::Decode() | Wrong dimmensions [%d,%d]\n",ctx->width,ctx->height);
+	{
+		//Warning
+		Warning("-H265Decoder::Decode() | Wrong dimmensions [%d,%d]\n",ctx->width,ctx->height);
+		//No frame
+		return {};
+	}
 
 	//Set new size in pool
 	videoBufferPool.SetSize(ctx->width, ctx->height);
 
+	//Get original video Frame
+	auto ref = videoFrames.Get(picture->reordered_opaque);
+
+	//If not found
+	if (!ref)
+	{
+		//Warning
+		Warning("-H264Decoder::Decode() | Could not found reference frame [reordered:%llu,current:%llu]\n", picture->reordered_opaque, count);
+		//No frame
+		return {};
+	}
+
 	//Get new frame
-	videoBuffer = videoBufferPool.allocate();
+	auto videoBuffer = videoBufferPool.Acquire();
 
 	//Set interlaced flags
 	videoBuffer->SetInterlaced(picture->interlaced_frame);
+
+	//IF the pixel aspect ratio is valid
+	if (picture->sample_aspect_ratio.num != 0)
+		//Set pixel aspect ration
+		videoBuffer->SetPixelAspectRatio(picture->sample_aspect_ratio.num, picture->sample_aspect_ratio.den);
 
 	//Set color range
 	switch (picture->color_range)
@@ -162,18 +186,18 @@ int H265Decoder::Decode(const BYTE *data,DWORD size)
 	Plane& u = videoBuffer->GetPlaneU();
 	Plane& v = videoBuffer->GetPlaneV();
 		
-	//Copaamos  el Cy
-	for (uint32_t i = 0; i < std::min<uint32_t>(ctx->height, y.GetHeight()); i++)
-		memcpy(y.GetData() + i * y.GetStride(), &picture->data[0][i * picture->linesize[0]], y.GetWidth());
+	//Copy data to each plane
+	y.SetData(picture->data[0], ctx->width, ctx->height, picture->linesize[0]);
+	u.SetData(picture->data[1], ctx->width/2, ctx->height/2, picture->linesize[1]);
+	v.SetData(picture->data[2], ctx->width/2, ctx->height/2, picture->linesize[2]);
 
-	//Y el Cr y Cb
-	for (uint32_t i = 0; i < std::min<uint32_t>({ ctx->height / 2, u.GetHeight(), v.GetHeight() }); i++)
-	{
-		memcpy(u.GetData() + i * u.GetStride(), &picture->data[1][i * picture->linesize[1]], u.GetWidth());
-		memcpy(v.GetData() + i * v.GetStride(), &picture->data[2][i * picture->linesize[2]], v.GetWidth());
-	}
+
+	//Get original video Frame
+	if (auto ref = videoFrames.Get(picture->reordered_opaque))
+		//Copy timing info
+		CopyPresentedTimingInfo(*ref, videoBuffer);
 
 	//OK
-	return 1;
+	return videoBuffer;
 }
 

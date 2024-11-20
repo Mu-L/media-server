@@ -2,6 +2,15 @@
 #include "media.h"
 #include "VideoCodecFactory.h"
 
+VideoDecoderWorker::VideoDecoderWorker() :
+	bitrateAcu(1000),
+	fpsAcu(1000),
+	decodingTimeAcu(1000),
+	waitingFrameTimeAcu(1000),
+	deinterlacingTimeAcu(1000)
+{
+}
+
 VideoDecoderWorker::~VideoDecoderWorker()
 {
 	Stop();
@@ -26,7 +35,7 @@ int VideoDecoderWorker::Start()
 }
 void * VideoDecoderWorker::startDecoding(void *par)
 {
-	Log("VideoDecoderThread [%p]\n",pthread_self());
+	Log("VideoDecoderThread [%lu]\n",pthread_self());
 	//Get worker
 	VideoDecoderWorker *worker = (VideoDecoderWorker *)par;
 	//Block all signals
@@ -48,7 +57,7 @@ int  VideoDecoderWorker::Stop()
 	decoding=0;
 
 	//Cancel any pending wait
-	packets.Cancel();
+	frames.Cancel();
 
 	//Esperamos
 	pthread_join(thread,NULL);
@@ -80,37 +89,40 @@ void VideoDecoderWorker::RemoveVideoOutput(VideoOutput* output)
 
 int VideoDecoderWorker::Decode()
 {
-	QWORD		frameTime = (QWORD)-1;
-	DWORD		lastSeq = RTPPacket::MaxExtSeqNum;
-	bool		waitIntra = false;
+	DWORD num = 0;
 
 	Log(">VideoDecoderWorker::Decode()\n");
+
+	//Waif for frame time init
+	uint64_t waitFrameStart = getTimeMS();
 
 	//Mientras tengamos que capturar
 	while(decoding)
 	{
-		//Obtenemos el paquete
-		if (!packets.Wait(0))
+		//Wait for an incoming frame
+		if (!frames.Wait(0))
 			//Done
 			break;
 
-		//Get packet in queue
-		auto packet = packets.Pop();
+		//Get frame from queue
+		auto videoFrame = frames.Pop();
 
 		//Check
-		if (!packet)
+		if (!videoFrame)
 			//Check condition again
 			continue;
-		
-		//Get extended sequence number and timestamp
-		DWORD seq = packet->GetExtSeqNum();
-		QWORD ts = packet->GetExtTimestamp();
+
+		//Get waif time end
+		uint64_t waitFrameEnd = getTimeMS();
+
+		//Update
+		waitingFrameTimeAcu.Update(waitFrameEnd, waitFrameEnd - waitFrameStart);
 
 		//If we don't have codec
-		if (!videoDecoder || (packet->GetCodec()!=videoDecoder->type))
+		if (!videoDecoder || (videoFrame->GetCodec()!=videoDecoder->type))
 		{
 			//Create new codec from pacekt
-			videoDecoder.reset(VideoCodecFactory::CreateDecoder((VideoCodec::Type)packet->GetCodec()));
+			videoDecoder.reset(VideoCodecFactory::CreateDecoder(videoFrame->GetCodec()));
 				
 			//Check we found one
 			if (!videoDecoder)
@@ -118,74 +130,31 @@ int VideoDecoderWorker::Decode()
 				continue;
 		}
 		
-		//Lost packets since last
-		DWORD lost = 0;
+		//Get time before decode
+		uint64_t decodeStartTime = waitFrameEnd;
 
-		//If not first
-		if (lastSeq!=RTPPacket::MaxExtSeqNum)
-			//Calculate losts
-			lost = seq-lastSeq-1;
-		
-		//Update last sequence number
-		lastSeq = seq;
-		
-		//If lost some packets or still have not got an iframe
-		if(lost)
-			//Waiting for refresh
-			waitIntra = true;
-
-		//Check if we have lost the last packet from the previous frame by comparing both timestamps
-		if (ts>frameTime)
-		{
-			Debug("-VideoDecoderWorker::Decode() | lost mark packet ts:%llu frameTime:%llu\n",ts,frameTime);
-			//Try to decode what is in the buffer
-			videoDecoder->DecodePacket(NULL,0,1,1);
-			//Get picture
-			const VideoBuffer::shared& frame = videoDecoder->GetFrame();
-			//Check
-			if (frame && !muted)
-			{
-				//Sync
-				ScopedLock scope(mutex);
-				//For each output
-				for (auto output : outputs)
-					//Send it
-					output->NextFrame(frame);
-			}
-		}
-		
-		//Update frame time
-		frameTime = ts;
-		
 		//Decode packet
-		if(!videoDecoder->DecodePacket(packet->GetMediaData(),packet->GetMediaLength(),lost,packet->GetMark()))
-			//Waiting for refresh
-			waitIntra = true;
-
-		//Check if it is the last packet of a frame
-		if(packet->GetMark())
-		{
-			//Check if we got the waiting refresh
-			if (waitIntra && videoDecoder->IsKeyFrame())
-			{
-				Debug("-VideoDecoderWorker::Decode() | Got Intra\n");
-				//Do not wait anymore
-				waitIntra = false;
-			}
+		if(!videoDecoder->Decode(videoFrame))
+			//Skip
+			continue;
 			
-			//No frame time yet for next frame
-			frameTime = (QWORD)-1;
+		//Increase deocder frames
+		num ++;
 
-			//Get picture
-			const VideoBuffer::shared& frame = videoDecoder->GetFrame();
+		//Get time after decoding
+		uint64_t decodeEndTime = getTimeMS();
 
-			//If no frame received yet
-			if (!frame)
-				//Get next one
-				continue;
+		//Calculate encoding time
+		decodingTimeAcu.Update(decodeEndTime, decodeEndTime - decodeStartTime);
 
+		//Increase frame counter
+		fpsAcu.Update(decodeEndTime, 1);
+
+		//Get picture
+		while (auto videoBuffer = videoDecoder->GetFrame())
+		{
 			//Check if we need to apply deinterlacing
-			if (frame->IsInterlaced())
+			if (videoBuffer->IsInterlaced())
 			{
 				//If we didn't had a deinterlacer or frame dimensions have changed (TODO)
 				if (!deinterlacer)
@@ -194,7 +163,7 @@ int VideoDecoderWorker::Decode()
 					deinterlacer.reset(new Deinterlacer());
 
 					//Start it
-					if (!deinterlacer->Start(frame->GetWidth(), frame->GetHeight()))
+					if (!deinterlacer->Start(videoBuffer->GetWidth(), videoBuffer->GetHeight()))
 					{
 						Error("-VideoDecoderWorker::Decode() | Could not start deinterlacer\n");
 						deinterlacer.reset();
@@ -202,17 +171,39 @@ int VideoDecoderWorker::Decode()
 					}
 				}
 
+				//Get time before deinterlacing
+				uint64_t deinterlaceStartTime = decodeEndTime;
+
 				//Deinterlace decoded frame
-				deinterlacer->Process(frame);
+				deinterlacer->Process(videoBuffer);
+
+				//Get time after deinterlacing
+				uint64_t deinterlaceEndTime = getTimeMS();
+
+				//Calculate deinterlacing time
+				deinterlacingTimeAcu.Update(deinterlaceEndTime, deinterlaceEndTime - deinterlaceStartTime);
 
 				//Get any porcessed frame
 				while (auto deinterlaced = deinterlacer->GetNextFrame())
 				{
+					//Set frame times
+					deinterlaced->CopyTimingInfo(videoBuffer);
+
 					//Check if we are muted
 					if (!muted)
 					{
 						//Sync
 						ScopedLock scope(mutex);
+						//Recalculate stats
+						stats.timestamp = deinterlaceEndTime;
+						stats.totalDecodedFrames = num;
+						stats.fps = fpsAcu.GetInstant();
+						stats.maxDecodingTime = decodingTimeAcu.GetMaxValueInWindow();
+						stats.avgDecodingTime = static_cast<uint16_t>(decodingTimeAcu.GetInstantMedia());
+						stats.maxWaitingFrameTime = waitingFrameTimeAcu.GetMaxValueInWindow();
+						stats.avgWaitingFrameTime = static_cast<uint16_t>(waitingFrameTimeAcu.GetInstantMedia());
+						stats.maxDeinterlacingTime = deinterlacingTimeAcu.GetMaxValueInWindow();
+						stats.avgDeinterlacingTime = static_cast<uint16_t>(deinterlacingTimeAcu.GetInstantMedia());
 						//For each output
 						for (auto output : outputs)
 							//Send it
@@ -220,14 +211,31 @@ int VideoDecoderWorker::Decode()
 					}
 				}
 			} else if (!muted) {
+
+				//Calculate deinterlacing time
+				deinterlacingTimeAcu.Update(decodeEndTime);
+
 				//Sync
 				ScopedLock scope(mutex);
+				//Recalculate stats
+				stats.timestamp = decodeEndTime;
+				stats.totalDecodedFrames = num;
+				stats.fps = fpsAcu.GetInstant();
+				stats.maxDecodingTime = decodingTimeAcu.GetMaxValueInWindow();
+				stats.avgDecodingTime = static_cast<uint16_t>(decodingTimeAcu.GetInstantMedia());
+				stats.maxWaitingFrameTime = waitingFrameTimeAcu.GetMaxValueInWindow();
+				stats.avgWaitingFrameTime = static_cast<uint16_t>(waitingFrameTimeAcu.GetInstantMedia());
+				stats.maxDeinterlacingTime = deinterlacingTimeAcu.GetMaxValueInWindow();
+				stats.avgDeinterlacingTime = static_cast<uint16_t>(deinterlacingTimeAcu.GetInstantMedia());
 				//For each output
 				for (auto output : outputs)
 					//Send it
-					output->NextFrame(frame);
+					output->NextFrame(videoBuffer);
 			}
 		}
+
+		//Waif for frame time init
+		waitFrameStart = getTimeMS();
 	}
 
 	Log("<VideoDecoderWorker::Decode()\n");
@@ -236,21 +244,21 @@ int VideoDecoderWorker::Decode()
 	return 0;
 }
 
-void VideoDecoderWorker::onRTP(const RTPIncomingMediaStream* stream, const RTPPacket::shared& packet)
+void VideoDecoderWorker::onMediaFrame(const MediaFrame& frame)
 {
+	//Ensure it is video
+	if (frame.GetType()!=MediaFrame::Video)
+	{
+		Warning("-VideoDecoderWorker::onMediaFrame()  got wrong frame type: %s [this: %p]\n", MediaFrame::TypeToString(frame.GetType()), this);
+		return;
+	}
+
 	//Put it on the queue
-	packets.Add(packet->Clone());
+	frames.Add(std::shared_ptr<VideoFrame>(static_cast<VideoFrame*>(frame.Clone())));
 }
 
-void VideoDecoderWorker::onEnded(const RTPIncomingMediaStream* stream)
+VideoDecoderWorker::Stats VideoDecoderWorker::GetStats()
 {
-	//Cancel packets wait
-	packets.Cancel();
-}
-
-
-void VideoDecoderWorker::onBye(const RTPIncomingMediaStream* stream)
-{
-	//Cancel packets wait
-	packets.Cancel();
+	ScopedLock scope(mutex);
+	return stats;
 }

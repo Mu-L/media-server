@@ -131,8 +131,13 @@ void RTPIncomingSource::Reset()
 	width = 0;
 	height = 0;
 	minExtSeqNumSinceLastSR		= RTPPacket::MaxExtSeqNum;
+
 	timestampExtender.Reset();
 	lastReceivedSenderRTPTimestampExtender.Reset();
+	targetBitrate.reset();
+	targetWidth.reset();
+	targetHeight.reset();
+	targetFps.reset();
 }
 
 DWORD RTPIncomingSource::ExtendTimestamp(DWORD timestamp)
@@ -153,10 +158,10 @@ WORD RTPIncomingSource::ExtendSeqNum(WORD seqNum)
 	return cycles; 
 }
 
-void RTPIncomingSource::Update(QWORD now,DWORD seqNum,DWORD size,const std::vector<LayerInfo> &layerInfos, bool aggreagtedLayers, const std::optional<struct VideoLayersAllocation>& videoLayersAllocation)
+void RTPIncomingSource::Update(QWORD now,DWORD seqNum,DWORD size,DWORD overheadSize,const std::vector<LayerInfo> &layerInfos, bool aggreagtedLayers, const std::optional<struct VideoLayersAllocation>& videoLayersAllocation)
 {
 	//Update source normally
-	RTPIncomingSource::Update(now,seqNum,size);
+	RTPIncomingSource::Update(now, seqNum, size, overheadSize);
 	//Set aggregated layers flag
 	this->aggregatedLayers = aggreagtedLayers;
 	//For each layer
@@ -168,7 +173,7 @@ void RTPIncomingSource::Update(QWORD now,DWORD seqNum,DWORD size,const std::vect
 			//Insert layer info if it doesn't exist
 			auto [it, inserted] = layers.try_emplace(layerInfo.GetId(), layerInfo);
 			//Update layer source
-			it->second.Update(now,size);
+			it->second.Update(now, size, overheadSize);
 		}
 	}
 	//If packet has VLA header extension 
@@ -190,9 +195,8 @@ void RTPIncomingSource::Update(QWORD now,DWORD seqNum,DWORD size,const std::vect
 				for (auto& [layerId,layerSource] : layers)
 				{
 					//if found
-					if (layerSource.spatialLayerId == activeLayer.spatialId)
+					if (layerSource.spatialLayerId == activeLayer.spatialId || layerSource.spatialLayerId == LayerInfo::MaxLayerId)
 					{
-						Log("- %d %d %d\n", layerSource.spatialLayerId, layerSource.temporalLayerId, activeLayer.targetBitratePerTemporalLayer[layerSource.temporalLayerId]);
 						//It is active
 						layerSource.active = true;
 						//Get bitrate for temporal layer, in bps
@@ -208,25 +212,35 @@ void RTPIncomingSource::Update(QWORD now,DWORD seqNum,DWORD size,const std::vect
 				//If layer was not found on the layer info or ther was no layer info
 				if (!found)
 				{
-					//For each temporal layer
-					for (size_t temporalLayerId = 0; temporalLayerId < activeLayer.targetBitratePerTemporalLayer.size(); ++temporalLayerId)
+					//If we don't have any layer and the vla is coming from the base layer, do not create a new one
+					if (layers.empty() && activeLayer.targetBitratePerTemporalLayer.size() == 1 && activeLayer.spatialId == 0)
 					{
-						//Create new Layer
-						LayerInfo layerInfo(activeLayer.spatialId, temporalLayerId);
-						//Insert layer info if it doesn't exist
-						auto [it, inserted] = layers.try_emplace(layerInfo.GetId(), layerInfo);
-						//Update layer source
-						it->second.Update(now, size);
-						//It is active
-						it->second.active = true;
 						//Get bitrate for temporal layer, in bps
-						it->second.targetBitrate = activeLayer.targetBitratePerTemporalLayer[temporalLayerId] * 1000;
+						this->targetBitrate = activeLayer.targetBitratePerTemporalLayer[0] * 1000;
 						//Set dimensios for the spatial layer
-						it->second.targetWidth = activeLayer.width;
-						it->second.targetHeight = activeLayer.height;
-						it->second.targetFps = activeLayer.fps;
+						this->targetWidth = activeLayer.width;
+						this->targetHeight = activeLayer.height;
+						this->targetFps = activeLayer.fps;
 
-						Log("-new %d %d %d\n", activeLayer.spatialId, temporalLayerId, activeLayer.targetBitratePerTemporalLayer[temporalLayerId]);
+					} else {
+						//For each temporal layer
+						for (size_t temporalLayerId = 0; temporalLayerId < activeLayer.targetBitratePerTemporalLayer.size(); ++temporalLayerId)
+						{
+							//Create new Layer
+							LayerInfo layerInfo(temporalLayerId, activeLayer.spatialId);
+							//Insert layer info if it doesn't exist
+							auto [it, inserted] = layers.try_emplace(layerInfo.GetId(), layerInfo);
+							//Update layer source
+							it->second.Update(now, size, overheadSize);
+							//It is active
+							it->second.active = true;
+							//Get bitrate for temporal layer, in bps
+							it->second.targetBitrate = activeLayer.targetBitratePerTemporalLayer[temporalLayerId] * 1000;
+							//Set dimensios for the spatial layer
+							it->second.targetWidth = activeLayer.width;
+							it->second.targetHeight = activeLayer.height;
+							it->second.targetFps = activeLayer.fps;
+						}
 					}
 				}
 			}
@@ -234,16 +248,16 @@ void RTPIncomingSource::Update(QWORD now,DWORD seqNum,DWORD size,const std::vect
 	}
 }
 
-void RTPIncomingSource::Update(QWORD now,DWORD seqNum,DWORD size)
+void RTPIncomingSource::Update(QWORD now,DWORD seqNum,DWORD size,DWORD overheadSize)
 {
 	//Store last seq number before updating
 	//DWORD lastExtSeqNum = extSeqNum;
 
 	//Update source
-	RTPSource::Update(now,seqNum,size);
+	RTPSource::Update(now,seqNum,size,overheadSize);
 
 	totalPacketsSinceLastSR++;
-	totalBytesSinceLastSR += size;
+	totalBytesSinceLastSR += size + overheadSize;
 	
 	//TODO: remove, this should be redundant
 	SetSeqNum(seqNum);

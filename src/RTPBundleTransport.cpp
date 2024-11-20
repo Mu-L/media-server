@@ -80,7 +80,7 @@ void RTPBundleTransport::SetRawTx(int32_t ifindex, unsigned int sndbuf, bool ski
 	if (skipQdisc && setsockopt(fd, SOL_PACKET, PACKET_QDISC_BYPASS, &skipQdiscInt, sizeof(skipQdiscInt)) < 0)
 		throw std::system_error(std::error_code(errno, std::system_category()), "failed setting QDISC_BYPASS");
 
-	loop.Async([=, fd = std::move(fd)](std::chrono::milliseconds) {
+	loop.AsyncUnsafe([=, fd = std::move(fd)](std::chrono::milliseconds) {
 		loop.SetRawTx(fd, header, defaultRoute);
 	});
 }
@@ -88,7 +88,7 @@ void RTPBundleTransport::SetRawTx(int32_t ifindex, unsigned int sndbuf, bool ski
 
 void RTPBundleTransport::RTPBundleTransport::ClearRawTx()
 {
-	loop.Async([=](std::chrono::milliseconds) { 
+	loop.AsyncUnsafe([=](std::chrono::milliseconds) { 
 		loop.ClearRawTx(); 
 	}); 
 }
@@ -146,7 +146,7 @@ RTPBundleTransport::Connection::shared RTPBundleTransport::AddICETransport(const
 	}
 	
 	//Create new ICE transport
-	auto transport = std::make_shared<DTLSICETransport>(this,loop,loop.GetPacketPool());
+	auto transport = DTLSICETransport::Create(this,loop,loop.GetPacketPool());
 	
 	//Set SRTP protection profiles
 	std::string profiles = properties.GetProperty("srtpProtectionProfiles","");
@@ -169,7 +169,7 @@ RTPBundleTransport::Connection::shared RTPBundleTransport::AddICETransport(const
 	auto connection = std::make_shared<Connection>(username,transport,properties.GetProperty("disableSTUNKeepAlive", false));
 	
 	//Synchronized
-	loop.Async([=](auto now){
+	loop.AsyncUnsafe([=](auto now){
 		//Add it
 		connections[username] = connection;
 		//Start it
@@ -186,7 +186,7 @@ int RTPBundleTransport::RemoveICETransport(const std::string &username)
 	Log("-RTPBundleTransport::RemoveICETransport() [username:%s]\n",username.c_str());
   
 	//Synchronized
-	loop.Async([=](auto now){
+	loop.AsyncUnsafe([=](auto now){
 
 		//Get transport
 		auto connectionIterator = connections.find(username);
@@ -244,7 +244,7 @@ bool RTPBundleTransport::RestartICETransport(const std::string& username, const 
 	}
 
 	//Synchronized
-	loop.Async([=](auto now) {
+	loop.AsyncUnsafe([=](auto now) {
 
 		//Get transport
 		auto connectionIterator = connections.find(username);
@@ -288,8 +288,6 @@ int RTPBundleTransport::Init()
 
 	//Clear addr
 	memset(&recAddr,0,sizeof(struct sockaddr_in));
-	//Init ramdon
-	srand (time(NULL));
 
 	//Set family
 	recAddr.sin_family     	= AF_INET;
@@ -317,7 +315,7 @@ int RTPBundleTransport::Init()
 // coverity[negative_returns]
 		if(bind(socket,(struct sockaddr *)&recAddr,sizeof(struct sockaddr_in))!=0)
 		{
-			Log("-could not bind");
+			Log("-could not bind port %u reason: %s\n", port, strerror(errno));
 			//Try again
 			continue;
 		}
@@ -350,9 +348,9 @@ int RTPBundleTransport::Init()
 		//Everything ok
 		Log("-RTPBundleTransport::Init() | Got port [%d]\n",port);
 		//Start receiving
-		loop.Start(socket);
+		loop.StartWithFd(socket);
 		//Create ice timer
-		iceTimer = loop.CreateTimer([=](std::chrono::milliseconds now){ this->onTimer(now); });
+		iceTimer = loop.CreateTimerUnsafe([=](std::chrono::milliseconds now){ this->onTimer(now); });
 		//Set name for debug
 		iceTimer->SetName("RTPBundleTransport - ice");
 		//Done
@@ -380,8 +378,6 @@ int RTPBundleTransport::Init(int port)
 
 	//Clear addr
 	memset(&recAddr,0,sizeof(struct sockaddr_in));
-	//Init ramdon
-	srand (time(NULL));
 
 	//Set family
 	recAddr.sin_family     	= AF_INET;
@@ -425,10 +421,10 @@ int RTPBundleTransport::Init(int port)
 	//Store local port
 	this->port = port;
 	//Start receiving
-	loop.Start(socket);
+	loop.StartWithFd(socket);
 	
 	//Create ice timer
-	iceTimer = loop.CreateTimer([=](std::chrono::milliseconds now){ this->onTimer(now); });
+	iceTimer = loop.CreateTimerUnsafe([=](std::chrono::milliseconds now){ this->onTimer(now); });
 	//Set name for debug
 	iceTimer->SetName("RTPBundleTransport - ice");
 
@@ -575,10 +571,20 @@ void RTPBundleTransport::OnRead(const int fd, const uint8_t* data, const size_t 
 			DWORD prio = priority ? get4(priority->attr,0) : 0;
 			
 			//Find candidate or try to create one if not present
-			auto [itc, inserted] = candidates.try_emplace(remote,ip,port,transport);
+			auto [itc, inserted] = candidates.try_emplace(remote,ip,port,transport,username);
 			
 			//Get candidate
 			ICERemoteCandidate* candidate = &itc->second;
+
+			//If the candidate already existed and belonged to a different transport,
+			//then the other side is sharing an endpoint for many transports, which
+			//prevents operation entirely.
+			if (candidate->GetUsername() != username)
+			{
+				//Log error and exit
+				Warning("-RTPBundleTransport:::Read() | candidate %s already used by another transport [username:%s,owner:%s]\n", remote.c_str(), username.c_str(), candidate->GetUsername().c_str());
+				return;
+			}
 			
 			//Check if it is not already present
 			if (inserted)
@@ -718,7 +724,7 @@ void RTPBundleTransport::OnRead(const int fd, const uint8_t* data, const size_t 
 void RTPBundleTransport::SetCandidateRawTxData(const std::string& ip, uint16_t port, uint32_t selfAddr, const std::string& dstLladdr)
 {
 	PacketHeader::FlowRoutingInfo rawTxData = { selfAddr, MacAddress::Parse(dstLladdr) };
-	loop.Async([=](auto now){
+	loop.AsyncUnsafe([=](auto now){
 		std::string remote = ip + ":" + std::to_string(port);
 
 		auto it = candidates.find(remote);
@@ -742,7 +748,7 @@ int RTPBundleTransport::AddRemoteCandidate(const std::string& username,const cha
 	auto ip = std::string(host);
 	
 	//Execute Sync
-	loop.Async([=](auto now){
+	loop.AsyncUnsafe([=](auto now){
 		//Check if we have an ICE transport for that username
 		auto it = connections.find(username);
 
@@ -763,11 +769,21 @@ int RTPBundleTransport::AddRemoteCandidate(const std::string& username,const cha
 		std::string remote = ip + ":" + std::to_string(port);
 		
 		//Create new candidate if it is not already present
-		auto [itc, inserted] = candidates.try_emplace(remote,ip,port,transport);
+		auto [itc, inserted] = candidates.try_emplace(remote,ip,port,transport,username);
 		
 		//Get candidate
 		ICERemoteCandidate* candidate = &itc->second;
 	
+		//If the candidate already existed and belonged to a different transport,
+		//then the other side is sharing an endpoint for many transports, which
+		//prevents operation entirely. The user is responsible not to break this
+		//assumption, but in case it ever happens, we print an error.
+		if (candidate->GetUsername() != username)
+		{
+			Error("-RTPBundleTransport::AddRemoteCandidate() | candidate %s already used by another transport [username:%s,owner:%s]\n", remote.c_str(), username.c_str(), candidate->GetUsername().c_str());
+			return;
+		}
+
 		//If it was new
 		if (inserted)
 			//Add candidate and add it to the connection
@@ -867,7 +883,7 @@ void RTPBundleTransport::onTimer(std::chrono::milliseconds now)
 			//Fire the timer again for timing out the transaction
 			iceTimer->Again(ts + iceTimeout - now);
 			//Done
-			return;
+			break;
 		}
 		//Get username and remote address of ice candidate
 		auto& [username,remote] = it->second;
@@ -877,7 +893,7 @@ void RTPBundleTransport::onTimer(std::chrono::milliseconds now)
 			
 		//If not found
 		if (cconnectionIterator==connections.end())
-			break;
+			continue;
 			
 		//Get ice connection
 		auto connection = cconnectionIterator->second;
@@ -887,7 +903,7 @@ void RTPBundleTransport::onTimer(std::chrono::milliseconds now)
 			
 		//Check we have it
 		if (candidateIterator==candidates.end())
-			break;
+			continue;
 		
 		//Get it
 		ICERemoteCandidate* candidate = &candidateIterator->second;

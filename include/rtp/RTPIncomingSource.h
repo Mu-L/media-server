@@ -50,6 +50,10 @@ struct RTPIncomingSource : public RTPSource
 
 	uint16_t width;
 	uint16_t height;
+	std::optional<uint32_t> targetBitrate;
+	std::optional<uint16_t> targetWidth;
+	std::optional<uint16_t> targetHeight;
+	std::optional<uint8_t>  targetFps;
 
 	WrapExtender<uint32_t,uint64_t> timestampExtender;
 	WrapExtender<uint32_t,uint64_t> lastReceivedSenderRTPTimestampExtender;
@@ -71,12 +75,12 @@ struct RTPIncomingSource : public RTPSource
 	DWORD ExtendTimestamp(DWORD timestamp);
 	DWORD RecoverTimestamp(DWORD timestamp);
 	
-	void Update(QWORD now,DWORD seqNum,DWORD size,const std::vector<LayerInfo> &layerInfos, bool aggreagtedLayers, const std::optional<struct VideoLayersAllocation>& videoLayersAllocation);
+	void Update(QWORD now,DWORD seqNum,DWORD size,DWORD overheadSize,const std::vector<LayerInfo> &layerInfos, bool aggreagtedLayers, const std::optional<struct VideoLayersAllocation>& videoLayersAllocation);
 	
 	void Process(QWORD now, const RTCPSenderReport::shared& sr);
 	void SetLastTimestamp(QWORD now, QWORD timestamp, QWORD captureTimestamp = 0);
 	
-	virtual void Update(QWORD now,DWORD seqNum,DWORD size) override;
+	virtual void Update(QWORD now,DWORD seqNum,DWORD size,DWORD overheadSize) override;
 	virtual void Update(QWORD now) override;
 	virtual void Reset() override;
 	

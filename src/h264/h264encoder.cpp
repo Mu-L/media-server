@@ -4,7 +4,7 @@
 #include <inttypes.h>
 #include "log.h"
 #include "h264encoder.h"
-
+#include "H26xNal.h"
 
 //////////////////////////////////////////////////////////////////////////
 //Encoder
@@ -66,17 +66,10 @@ H264Encoder::H264Encoder(const Properties& properties) : frame(VideoCodec::H264)
 {
 	// Set default values
 	type    = VideoCodec::H264;
-	format  = 0;
-	pts     = 0;
+	Debug("-H264Encoder::H264Encoder()\n");
+	for (Properties::const_iterator it = properties.begin(); it != properties.end(); ++it)
+		Debug("-H264Encoder::H264Encoder() | Setting property [%s:%s]\n", it->first.c_str(), it->second.c_str());
 
-	//No estamos abiertos
-	opened = false;
-
-	//No bitrate
-	bitrate = 0;
-	fps = 0;
-	intraPeriod = X264_KEYINT_MAX_INFINITE;
-	
 	//Number of threads or auto
 	threads = properties.GetProperty("h264.threads",0);
 
@@ -94,14 +87,18 @@ H264Encoder::H264Encoder(const Properties& properties) : frame(VideoCodec::H264)
 	//ratetol, please check after h264.streaming
 	ratetol = properties.GetProperty("h264.ratetol", streaming? 0.0F : 0.1F);
 
+	//VBV buffer size in frames according to the bitrate
+	bufferSizeInFrames = properties.GetProperty("h264.buffersize_in_frames", streaming ? 3 : 1);
+	maxBitrateMultiplier = properties.GetProperty("h264.max_bitrate_multiplier", 1.0F);
+
 	//Use annex b
 	annexb = properties.GetProperty("h264.annexb",false);
 
+	qMin = properties.GetProperty("h264.qmin", qMin);
+	qMax = properties.GetProperty("h264.qmax", qMax);
+
 	//Disable sharing buffer on clone
 	frame.DisableSharedBuffer();
-
-	//Reste values
-	enc = NULL;
 }
 
 /**********************
@@ -163,9 +160,10 @@ int H264Encoder::SetFrameRate(int frames,int kbits,int intraPeriod)
 		//UltraDebug("-H264Encoder::SetFrameRate() | reconfig x264 encoder\n");
 		//Reconfig parameters -> FPS is not allowed to be reconfigured
 		params.i_keyint_max         = this->intraPeriod ;
+		params.i_keyint_min	    = this->intraPeriod;
 		params.rc.i_bitrate         = bitrate;
-		params.rc.i_vbv_max_bitrate = bitrate;
-		params.rc.i_vbv_buffer_size = bitrate/10;
+		params.rc.i_vbv_max_bitrate = bitrate * maxBitrateMultiplier;
+		params.rc.i_vbv_buffer_size = bufferSizeInFrames * bitrate / fps;
 		
 		//Reconfig
 		if (x264_encoder_reconfig(enc,&params)!=0)
@@ -210,50 +208,58 @@ int H264Encoder::OpenCodec()
 
 	// Set parameters
 	params.i_keyint_max         = intraPeriod;
+	params.i_keyint_min	    = intraPeriod;
 	params.i_frame_reference    = 2;
 	params.rc.i_rc_method	    = X264_RC_ABR;
+	//param->rc.i_rc_method	    = X264_RC_CRF;
+	//param->rc.f_rf_constant   = 23;
+
 	params.rc.i_bitrate         = bitrate;
-	params.rc.i_vbv_max_bitrate = bitrate;
+	params.rc.i_vbv_max_bitrate = bitrate * maxBitrateMultiplier;
+	if (qMin) 
+		params.rc.i_qp_min	    = qMin;
+	if (qMax)
+		params.rc.i_qp_max	    = qMax;
+	params.rc.i_aq_mode	    = X264_AQ_AUTOVARIANCE_BIASED;
 	if (!streaming)
 	{
-		params.rc.i_vbv_buffer_size = bitrate/fps;
 		params.rc.b_stat_write      = 0;
 		params.b_intra_refresh	    = 1;
-	} else  {
-		params.rc.i_vbv_buffer_size = bitrate/10;
 	}
+	params.b_deblocking_filter = 1;
+	params.i_deblocking_filter_alphac0 = -2;
+	params.i_deblocking_filter_beta = 2;
+
+	params.rc.i_vbv_buffer_size = bufferSizeInFrames * bitrate / fps;
 	params.rc.f_rate_tolerance  = ratetol;
-	Log("-H264Encoder::OpenCodec() | config ratetol:%f\n", params.rc.f_rate_tolerance);
+
+
+	Debug("-H264Encoder::OpenCodec() | config params.rc.f_rate_tolerance:%f params.rc.i_vbv_buffer_size:%d\n", params.rc.f_rate_tolerance, params.rc.i_vbv_buffer_size);
+
+
 	// change ipratio only when it's configured in profile property
 	// or else leave its value according to preset & tune
 	if (ipratio >= 0)
 	{
 		params.rc.f_ip_factor = ipratio;
 	}
-	Log("-H264Encoder::OpenCodec() | config ipratio:%f\n", params.rc.f_ip_factor);
-	// set controls only when tune is not configued in profile property
-	if (!tune.has_value() && !preset.has_value())
-	{
-		Log("-H264Encoder::OpenCodec() | neither preset or tune is set by profile property, config encoder to fit realtime streaming mode\n");
-		params.b_sliced_threads	    = 0;
-		params.rc.i_lookahead       = 0;
-		params.rc.b_mb_tree       = 0;
-		params.i_sync_lookahead	    = 0;
-		params.i_scenecut_threshold = 0;
-		params.analyse.i_subpel_refine = 5; //Subpixel motion estimation and mode decision :3 qpel (medim:6, ultrafast:1)
-	}
-
-	params.analyse.i_weighted_pred = X264_WEIGHTP_NONE;
-	params.analyse.i_me_method = X264_ME_UMH;
-
-	params.i_threads	    = threads; //0 is auto!!
-
-	params.i_bframe             = 0;
-	params.b_annexb		    = annexb; 
-	params.b_repeat_headers     = 1;
-	params.i_fps_num	    = fps;
-	params.i_fps_den	    = 1;
-	params.vui.i_chroma_loc	    = 0;
+	
+	params.i_threads		= threads; //0 is auto!!
+	params.b_sliced_threads		= 1;
+	params.b_vfr_input		= 0;
+	params.rc.i_lookahead		= 0;
+	params.rc.b_mb_tree		= 0;
+	params.i_sync_lookahead		= 0;
+	params.i_scenecut_threshold	= 0;
+	params.analyse.i_subpel_refine	= 6; //Subpixel motion estimation and mode decision :3 qpel (medim:6, ultrafast:1)
+	params.analyse.i_weighted_pred	= X264_WEIGHTP_NONE;
+	params.analyse.i_me_method	= X264_ME_UMH;
+	params.i_bframe			= 0;
+	params.b_annexb			= annexb; 
+	params.b_repeat_headers		= 1;
+	params.i_fps_num		= fps;
+	params.i_fps_den		= 1;
+	params.vui.i_chroma_loc		= 0;
 
 	//Set level
 	params.i_level_idc = LevelNumberToLevelIdc(GetLevelInUse().c_str());
@@ -294,24 +300,34 @@ VideoFrame* H264Encoder::EncodeFrame(const VideoBuffer::const_shared& videoBuffe
 		return NULL;
 	}
 
-	//Get planes
-	const Plane& y = videoBuffer->GetPlaneY();
-	const Plane& u = videoBuffer->GetPlaneU();
-	const Plane& v = videoBuffer->GetPlaneV();
+	int len = 0;
+	if (videoBuffer)
+	{
+		//Get planes
+		const Plane& y = videoBuffer->GetPlaneY();
+		const Plane& u = videoBuffer->GetPlaneU();
+		const Plane& v = videoBuffer->GetPlaneV();
 
-	//POnemos los valores
-	pic.img.plane[0] = (unsigned char*)y.GetData();
-	pic.img.plane[1] = (unsigned char*)u.GetData();
-	pic.img.plane[2] = (unsigned char*)v.GetData();
-	pic.img.i_stride[0] = y.GetStride();
-	pic.img.i_stride[1] = u.GetStride();
-	pic.img.i_stride[2] = v.GetStride();
-	pic.img.i_csp   = X264_CSP_I420;
-	pic.img.i_plane = 3;
-	pic.i_pts  = pts++;
+		//POnemos los valores
+		pic.img.plane[0] = (unsigned char*)y.GetData();
+		pic.img.plane[1] = (unsigned char*)u.GetData();
+		pic.img.plane[2] = (unsigned char*)v.GetData();
+		pic.img.i_stride[0] = y.GetStride();
+		pic.img.i_stride[1] = u.GetStride();
+		pic.img.i_stride[2] = v.GetStride();
+		pic.img.i_csp   = X264_CSP_I420;
+		pic.img.i_plane = 3;
+		pic.i_pts  = pts++;
 
-	// Encode frame and get length
-	int len = x264_encoder_encode(enc, &nals, &numNals, &pic, &pic_out);
+		// Encode frame and get length
+		len = x264_encoder_encode(enc, &nals, &numNals, &pic, &pic_out);
+	}
+	// end of stream, flushing buffered encoded frame
+	else
+	{
+		len = x264_encoder_encode(enc, &nals, &numNals, nullptr, &pic_out);
+	}
+	
 
 	//Check it
 	if (len<0)
@@ -349,6 +365,8 @@ VideoFrame* H264Encoder::EncodeFrame(const VideoBuffer::const_shared& videoBuffe
 		config.ClearSequenceParameterSets();
 		config.ClearPictureParameterSets();
 	}
+	//Insert SEI timecode
+	bool inserted = false;
 
 	//Add packetization
 	for (int i=0;i<numNals;i++)
@@ -366,6 +384,43 @@ VideoFrame* H264Encoder::EncodeFrame(const VideoBuffer::const_shared& videoBuffe
 		//Check if IDR SPS or PPS
 		switch (nalType)
 		{
+			case 0x01:
+				[[fallthrough]];
+			case 0x05:
+				//If we need to insert the timestamp in the first video nal
+				if (videoBuffer && videoBuffer->HasSenderTime() && !inserted)
+				{
+					uint8_t  nalHeader[4] = {0x00, 0x00, 0x00, 0x01};
+					//Add unregistered SEI message NAL
+					uint8_t sei[28] = { 0x06, 0x05, 0x18, 0x9a, 0x21, 0xf3, 0xbe, 0x31,
+							    0xf0, 0x4b, 0x78, 0xb0, 0xbe, 0xc7, 0xf7, 0xdb,
+							    0xb9, 0x72, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00,
+							    0x00, 0x00, 0x00, 0x80 };
+
+					if (!annexb)
+						//Set size
+						setN(4, nalHeader, 0, sizeof(sei));
+
+					//Append nal size header
+					frame.AppendMedia(nalHeader, sizeof(nalHeader));
+
+					//Set timestamp
+					set8(sei, 19, videoBuffer->GetSenderTime());
+
+					//Escape nal
+					uint8_t seiEscaped[sizeof(sei) * 2];
+					auto seiSize = NalEscapeRbsp(seiEscaped, sizeof(seiEscaped), sei, sizeof(sei)).value();
+
+					//Append nal
+					auto ini = frame.AppendMedia(seiEscaped, seiSize);
+
+					//Crete rtp packet
+					frame.AddRtpPacket(ini, seiSize, nullptr, 0);
+
+					//We have inserted the SEI timestamp correctly
+					inserted = true;
+				}
+				break;
 			case 0x07:
 			{
 				//Set config
@@ -406,7 +461,7 @@ VideoFrame* H264Encoder::EncodeFrame(const VideoBuffer::const_shared& videoBuffe
 			//Start with S = 1, E = 0
 			const size_t naluHeaderSize = 1;
 			const uint8_t nri = nalUnit[0] & 0b0110'0000;
-			std::array<uint8_t, 2> fuPrefix = { nri | 28u, nalType };
+			std::array<uint8_t, 2> fuPrefix = { static_cast<uint8_t>(nri | 28u), nalType };
 			fuPrefix[1] &= 0b0011'1111;
 			fuPrefix[1] |= 0b1000'0000;
 			// Skip payload nal header

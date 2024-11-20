@@ -44,13 +44,13 @@ public:
 		main.SetThreadName("main");
 		tester.SetThreadName("tester");
 
-		main.CreateTimer(0ms, 50ms, [&](std::chrono::milliseconds triggered) {});
+		main.CreateTimerUnsafe(0ms, 50ms, [&](std::chrono::milliseconds triggered) {});
 
 		Timer::shared timer;
-		timer = tester.CreateTimer(1ms,[&](std::chrono::milliseconds triggered){
+		timer = tester.CreateTimerUnsafe(1ms,[&](std::chrono::milliseconds triggered){
 
 			//Run in main thread
-			main.Sync([&](std::chrono::milliseconds executed) {
+			main.SyncUnsafe([&](std::chrono::milliseconds executed) {
 				auto diff = executed - triggered;
 				if (diff.count() > 10) Log("%u", diff.count());
 				assert(diff.count()<=10);
@@ -60,10 +60,10 @@ public:
 			timer->Again(0ms);
 		});
 
-		sleep(300);
+		sleep(3);
 
-		main.Stop();
 		tester.Stop();
+		main.Stop();
 	}
 
 };

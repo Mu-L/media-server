@@ -2,6 +2,7 @@
 #define VIDEOBUFFER_H_
 #include "config.h"
 #include <memory>
+#include <optional>
 
 class Plane
 {
@@ -32,6 +33,13 @@ public:
 	void Fill(BYTE color)
 	{
 		memset(buffer, color, size);
+	}
+
+	void SetData(const uint8_t* data, uint32_t width, uint32_t heigth, uint32_t stride)
+	{
+		for (uint32_t i = 0; i < std::min<uint32_t>(height, GetHeight()); i++)
+			memcpy(GetData() + i * GetStride(), data + i * stride, std::min<uint32_t>(width, GetWidth()));
+
 	}
 
 private:
@@ -101,6 +109,46 @@ public:
 	ColorRange GetColorRange() const { return colorRange; }
 	ColorSpace GetColorSpace() const { return colorSpace; }
 
+	void SetPixelAspectRatio(int pixelAspectRatioNum, int pixelAspectRatioDen)	{ this->pixelAspectRatio = { pixelAspectRatioNum , pixelAspectRatioDen }; }
+	void SetPixelAspectRatio(std::pair<int,int> pixelAspectRatio)			{ this->pixelAspectRatio = pixelAspectRatio; }
+	std::pair<int, int> GetPixelAspectRatio() const			{ return this->pixelAspectRatio; }
+	bool HasNonSquarePixelAspectRatio() const			{ return this->pixelAspectRatio.first && this->pixelAspectRatio.first != this->pixelAspectRatio.second; }
+
+	bool    HasTimestamp() const	{ return ts.has_value();	}
+	QWORD	GetTimestamp() const	{ return ts.value();		}
+	void	SetTimestamp(QWORD ts)	{ this->ts = ts;		}
+	bool    HasTime() const		{ return time.has_value();	}
+	QWORD	GetTime() const		{ return time.value();		}
+	void	SetTime(QWORD time)	{ this->time = time;		}
+
+	bool    HasSenderTime() const   { return senderTime.has_value();	}
+	QWORD   GetSenderTime() const	{ return senderTime.value();		}
+	void    SetSenderTime(QWORD senderTime) { this->senderTime = senderTime;}
+
+	DWORD   HasClockRate() const	{ return clockRate.has_value();		}
+	DWORD   GetClockRate() const	{ return clockRate.value();		}
+	void    SetClockRate(DWORD clockRate) { this->clockRate = clockRate;	}
+
+	void    CopyTimingInfo(const VideoBuffer::const_shared& videoBuffer)
+	{
+		time = videoBuffer->time;
+		ts = videoBuffer->ts;
+		clockRate = videoBuffer->clockRate;
+		senderTime = videoBuffer->senderTime;
+	}
+  
+	void	Reset()
+	{
+		isInterlaced = false;
+		colorSpace = ColorSpace::Unknown;
+		colorRange = ColorRange::Unknown;
+		pixelAspectRatio = { 1,1 };
+		ts.reset();
+		time.reset();
+		senderTime.reset();
+		clockRate.reset();
+	}
+
 private:
 	
 	Plane	planeY;
@@ -111,9 +159,12 @@ private:
 	bool	isInterlaced = false;
 	ColorSpace colorSpace = ColorSpace::Unknown;
 	ColorRange colorRange = ColorRange::Unknown;
-	
-	
-	
+	std::pair<int, int> pixelAspectRatio = {1,1};
+
+	std::optional<QWORD> ts;
+	std::optional<QWORD> time;
+	std::optional<QWORD> senderTime;
+	std::optional<DWORD> clockRate;
 };
 
 #endif // !VIDEOBUFFER_H_

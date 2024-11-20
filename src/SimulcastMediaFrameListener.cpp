@@ -17,7 +17,7 @@ constexpr uint32_t calcMaxQueueSize(DWORD numLayers)
 }
 
 SimulcastMediaFrameListener::SimulcastMediaFrameListener(TimeService& timeService, DWORD ssrc, DWORD numLayers) :
-	timeService(timeService),
+	TimeServiceWrapper<SimulcastMediaFrameListener>(timeService),
 	forwardSsrc(ssrc),
 	numLayers(numLayers),
 	maxQueueSize(calcMaxQueueSize(numLayers))
@@ -30,9 +30,9 @@ SimulcastMediaFrameListener::~SimulcastMediaFrameListener()
 
 void SimulcastMediaFrameListener::AddMediaListener(const MediaFrame::Listener::shared& listener)
 {
-	Debug("-MediaFrameListenerBridge::AddListener() [this:%p,listener:%p]\n", this, listener.get());
+	Debug("-SimulcastMediaFrameListener::AddListener() [this:%p,listener:%p]\n", this, listener.get());
 
-	timeService.Sync([=](std::chrono::milliseconds){
+	Sync([=](std::chrono::milliseconds){
 		//Add listener to set
 		listeners.insert(listener);
 		//If it is first listener
@@ -46,8 +46,8 @@ void SimulcastMediaFrameListener::AddMediaListener(const MediaFrame::Listener::s
 
 void SimulcastMediaFrameListener::RemoveMediaListener(const MediaFrame::Listener::shared& listener)
 {
-	Debug("-MediaFrameListenerBridge::RemoveListener() [this:%p,listener:%p]\n", this, listener.get());
-	timeService.Sync([=](std::chrono::milliseconds){
+	Debug("-SimulcastMediaFrameListener::RemoveListener() [this:%p,listener:%p]\n", this, listener.get());
+	Sync([=](std::chrono::milliseconds){
 		//Remove listener
 		listeners.erase(listener);
 		//If it was the last listener
@@ -61,9 +61,9 @@ void SimulcastMediaFrameListener::RemoveMediaListener(const MediaFrame::Listener
 
 void SimulcastMediaFrameListener::AttachTo(const MediaFrame::Producer::shared& producer)
 {
-	Debug("-MediaFrameListenerBridge::AttachTo() [this:%p,producer:%p]\n", this, producer.get());
+	Debug("-SimulcastMediaFrameListener::AttachTo() [this:%p,producer:%p]\n", this, producer.get());
 
-	timeService.Sync([=](std::chrono::milliseconds) {
+	Sync([=](std::chrono::milliseconds) {
 		//Add producer
 		producers.insert(producer);
 		//If we have any listener
@@ -75,15 +75,16 @@ void SimulcastMediaFrameListener::AttachTo(const MediaFrame::Producer::shared& p
 
 void SimulcastMediaFrameListener::Detach(const MediaFrame::Producer::shared& producer)
 {
-	Debug("-MediaFrameListenerBridge::Detach() [this:%p,producer:%p]\n", this, producer.get());
-	timeService.Sync([=](std::chrono::milliseconds) {
+	Debug("-SimulcastMediaFrameListener::Detach() [this:%p,producer:%p]\n", this, producer.get());
+	Sync([=](std::chrono::milliseconds) {
+		producer->RemoveMediaListener(shared_from_this());
 		producers.erase(producer);
 	});
 }
 
 void SimulcastMediaFrameListener::Stop()
 {
-	timeService.Sync([this](std::chrono::milliseconds) {
+	Sync([this](std::chrono::milliseconds) {
 		// Store remaining
 		Flush();
 		//For all producers
@@ -98,7 +99,7 @@ void SimulcastMediaFrameListener::Stop()
 
 void SimulcastMediaFrameListener::SetNumLayers(DWORD numLayers)
 {
-	timeService.Sync([this, numLayers](std::chrono::milliseconds) {
+	Sync([this, numLayers](std::chrono::milliseconds) {
 		this->numLayers = numLayers;
 		maxQueueSize = calcMaxQueueSize(numLayers);
 		initialised = false;
@@ -124,9 +125,9 @@ void SimulcastMediaFrameListener::onMediaFrame(DWORD ssrc, const MediaFrame& fra
 		return;
 
 	//Get cloned video frame
-	auto cloned = std::unique_ptr<VideoFrame>((VideoFrame*)frame.Clone());
+	std::shared_ptr<VideoFrame> cloned(static_cast<VideoFrame*>(frame.Clone()));
 	cloned->SetSSRC(ssrc);
-
+	
 	Push(std::move(cloned));
 }
 
@@ -151,7 +152,14 @@ void SimulcastMediaFrameListener::ForwardFrame(VideoFrame& frame)
 		listener->onMediaFrame(forwardSsrc, frame);
 }
 
-void SimulcastMediaFrameListener::Push(std::unique_ptr<VideoFrame>&& frame)
+void SimulcastMediaFrameListener::Push(std::shared_ptr<VideoFrame>&& frame)
+{
+	AsyncSafe([this, frame = std::move(frame)](std::chrono::milliseconds now) mutable {
+		PushAsync(now, std::move(frame));
+	});
+}
+
+void SimulcastMediaFrameListener::PushAsync(std::chrono::milliseconds now, std::shared_ptr<VideoFrame>&& frame)
 {
 	DWORD ssrc = frame->GetSSRC();
 
@@ -236,7 +244,7 @@ void SimulcastMediaFrameListener::Push(std::unique_ptr<VideoFrame>&& frame)
 	}
 }
 
-void SimulcastMediaFrameListener::Enqueue(std::unique_ptr<VideoFrame>&& frame)
+void SimulcastMediaFrameListener::Enqueue(std::shared_ptr<VideoFrame>&& frame)
 {
 	lastEnqueueTimeMs = frame->GetTime();
 
@@ -250,6 +258,8 @@ void SimulcastMediaFrameListener::Enqueue(std::unique_ptr<VideoFrame>&& frame)
 
 	while (!queue.empty() && initialised)
 	{
+// Ignore coverity error: Attempting to access the managed object of an empty smart pointer "this->queue.front()".
+// coverity[dereference]
 		auto tm = queue.front()->GetTimestamp();
 		bool allLayersRecievedAtTimestamp = std::all_of(layerTimestamps.begin(), layerTimestamps.end(), [tm](auto& lt) {
 			return lt.second >= tm;
@@ -277,6 +287,8 @@ void SimulcastMediaFrameListener::Flush()
 	{
 		auto f = std::move(queue.front());
 		queue.pop_front();
+// Ignore coverity error: Attempting to access the managed object of an empty smart pointer "f".
+// coverity[dereference]
 		ForwardFrame(*f);
 	}
 }

@@ -17,6 +17,7 @@
 #include <arpa/inet.h>
 #include <list>
 
+#include "FecProbeGenerator.h"
 #include "config.h"
 #include "stunmessage.h"
 #include "dtls.h"
@@ -26,7 +27,7 @@
 #include "use.h"
 #include "UDPDumper.h"
 #include "remoterateestimator.h"
-#include "EventLoop.h"
+#include "ObjectPool.h"
 #include "Datachannels.h"
 #include "Endpoint.h"
 #include "SRTPSession.h"
@@ -36,7 +37,8 @@ class DTLSICETransport :
 	public RTPSender,
 	public RTPReceiver,
 	public DTLSConnection::Listener,
-	public ICERemoteCandidate::Listener
+	public ICERemoteCandidate::Listener,
+	public TimeServiceWrapper<DTLSICETransport>
 {
 public:
 	using shared = std::shared_ptr<DTLSICETransport>;
@@ -58,6 +60,7 @@ public:
 		virtual void onICETimeout() = 0;
 		virtual void onDTLSStateChanged(const DTLSState) = 0;
 		virtual void onRemoteICECandidateActivated(const std::string& ip, uint16_t port, uint32_t priority) = 0;
+		virtual void onUnsignaledIncomingSourceGroup(const RTPIncomingSourceGroup::shared& group) = 0;
 		virtual ~Listener() = default;
 	};
 	class Sender
@@ -66,8 +69,12 @@ public:
 		virtual int Send(const ICERemoteCandidate *candiadte, Packet&& buffer, const std::optional<std::function<void(std::chrono::milliseconds)>>& callback = std::nullopt) = 0;
 	};
 
-public:
+private:
+	// Private constructor to prevent creating without TimeServiceWrapper::Create() factory
+	friend class TimeServiceWrapper<DTLSICETransport>;
 	DTLSICETransport(Sender *sender,TimeService& timeService, ObjectPool<Packet>& packetPool);
+
+public:
 	virtual ~DTLSICETransport();
 	
 	void Start();
@@ -82,7 +89,7 @@ public:
 	int Dump(const char* filename, bool inbound = true, bool outbound = true, bool rtcp = true, bool rtpHeadersOnly = false);
 	int Dump(UDPDumper* dumper, bool inbound = true, bool outbound = true, bool rtcp = true, bool rtpHeadersOnly = false);
 	int StopDump();
-        int DumpBWEStats(const char* filename);
+	int DumpBWEStats(const char* filename, size_t fileSizeLimit=0);
 	int StopDumpBWEStats();
 	void Reset();
 	
@@ -124,8 +131,6 @@ public:
 	
 	DWORD GetRTT() const { return rtt; }
 	
-	TimeService& GetTimeService() { return timeService; }
-	
 	void SetListener(const Listener::shared& listener);
 
 private:
@@ -136,16 +141,17 @@ private:
 	int Send(const RTCPCompoundPacket::shared& rtcp);
 	void SetRTT(DWORD rtt,QWORD now);
 	void onRTCP(const RTCPCompoundPacket::shared &rtcp);
-	void ReSendPacket(RTPOutgoingSourceGroup *group,WORD seq);
+	void ReSendPacket(RTPOutgoingSourceGroup* group,WORD seq);
 	DWORD SendProbe(const RTPPacket::shared& packet);
-	DWORD SendProbe(RTPOutgoingSourceGroup *group,BYTE padding);
+	DWORD SendProbe(RTPOutgoingSourceGroup* group,BYTE padding);
+	DWORD SendFecProbe(const RTPPacket::shared& packet, DWORD protectedSsrc);
 	void SendTransportWideFeedbackMessage(DWORD ssrc);
 	
 	int SetLocalCryptoSDES(const char* suite, const BYTE* key, const DWORD len);
 	int SetRemoteCryptoSDES(const char* suite, const BYTE* key, const DWORD len);
 	//Helpers
-	RTPIncomingSourceGroup* GetIncomingSourceGroup(DWORD ssrc);
-	RTPOutgoingSourceGroup* GetOutgoingSourceGroup(DWORD ssrc);
+	RTPIncomingSourceGroup*	GetIncomingSourceGroup(DWORD ssrc);
+	RTPOutgoingSourceGroup*	GetOutgoingSourceGroup(DWORD ssrc);
 	RTPIncomingSource*	GetIncomingSource(DWORD ssrc);
 	RTPOutgoingSource*	GetOutgoingSource(DWORD ssrc);
 
@@ -159,12 +165,11 @@ private:
 	
 private:
 	Sender*		sender = nullptr;
-	TimeService&	timeService;
 	ObjectPool<Packet>& packetPool;
 	datachannels::impl::Endpoint endpoint;
 	datachannels::Endpoint::Options dcOptions;
 	Listener::shared listener;
-	DTLSConnection	dtls;
+	std::shared_ptr<DTLSConnection>	dtls;
 	DTLSState	state = DTLSState::New;
 	Maps		sendMaps;
 	Maps		recvMaps;
@@ -176,12 +181,12 @@ private:
 	DWORD		lastFeedbackPacketExtSeqNum	= 0;
 	WORD		feedbackCycles			= 0;
 
-	//TODO: change by shared pointers
-	std::map<DWORD, RTPOutgoingSourceGroup*> outgoing;
-	std::map<DWORD, RTPIncomingSourceGroup*> incoming;
-	std::map<std::string,RTPIncomingSourceGroup*> rids;
-	std::map<std::string,std::set<RTPIncomingSourceGroup*>> mids;
+	std::map<DWORD, RTPOutgoingSourceGroup::shared> outgoing;
+	std::map<DWORD, RTPIncomingSourceGroup::shared> incoming;
+	std::map<std::string,RTPIncomingSourceGroup::shared> rids;
+	std::map<std::string,std::set<RTPIncomingSourceGroup::shared>> mids;
 	CircularQueue<RTPPacket::shared> history;
+	FecProbeGenerator fecProbeGenerator;
 	
 	DWORD	mainSSRC		= 1;
 	DWORD   lastMediaSSRC		= 0;

@@ -12,21 +12,16 @@ class H264Decoder : public VideoDecoder
 public:
 	H264Decoder();
 	virtual ~H264Decoder();
-	virtual int DecodePacket(const BYTE *in,DWORD len,int lost,int last);
-	virtual int Decode(const BYTE *in,DWORD len);
-	virtual int GetWidth()		{ return ctx->width;		};
-	virtual int GetHeight()		{ return ctx->height;		};
-	virtual const VideoBuffer::shared& GetFrame() { return videoBuffer;	};
-	virtual bool  IsKeyFrame()	{ return picture->key_frame;	};
+	virtual int Decode(const VideoFrame::const_shared& frame);
+	virtual VideoBuffer::shared GetFrame();
 private:
-	AVCodec*	codec	= nullptr;
+	const AVCodec*	codec	= nullptr;
 	AVCodecContext*	ctx	= nullptr;
 	AVFrame*	picture	= nullptr;
 	AVPacket*	packet	= nullptr;
 	
-	H264Depacketizer    depacketizer;
-	VideoBuffer::shared videoBuffer;
 	VideoBufferPool	    videoBufferPool;
-
+	uint32_t count = 0;
+	CircularBuffer<VideoFrame::const_shared, uint32_t, 64> videoFrames;
 };
 #endif

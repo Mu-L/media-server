@@ -20,6 +20,9 @@ struct LayerFrame
 class VideoFrame : public MediaFrame
 {
 public:
+	using shared = std::shared_ptr<VideoFrame>;
+	using const_shared = std::shared_ptr<const VideoFrame>;
+public:
 	VideoFrame(VideoCodec::Type codec) : MediaFrame(MediaFrame::Video)
 	{
 		//Store codec
@@ -53,21 +56,27 @@ public:
 		frame->SetHeight(height);
 		//Set intra
 		frame->SetIntra(isIntra);
+		//Set B frame
+		frame->SetBFrame(isBFrame);
 		//Set clock rate
 		frame->SetClockRate(GetClockRate());
 		//Set timestamp
 		frame->SetTimestamp(GetTimeStamp());
+		frame->SetPresentationTimestamp(GetPresentationTimestamp());
 		//Set time
 		frame->SetTime(GetTime());
 		frame->SetSenderTime(GetSenderTime());
 		frame->SetTimestampSkew(GetTimestampSkew());
 		//Set duration
 		frame->SetDuration(GetDuration());
+
 		//Set CVO
 		if (cvo) frame->SetVideoOrientation(*cvo);
 		//Copy target bitrate and fps
 		frame->SetTargetBitrate(targetBitrate);
 		frame->SetTargetFps(targetFps);
+		// SSRC
+		frame->SetSSRC(GetSSRC());
 		//If we have disabled the shared buffer for this frame
 		if (disableSharedBuffer)
 			//Copy data
@@ -109,27 +118,44 @@ public:
 	void SetTargetFps(uint32_t targetFps)		{ this->targetFps = targetFps;		}	
 	uint32_t GetTargetFps() const			{ return this->targetFps;		}
 
+	void SetBFrame(bool isBFrame) { this->isBFrame = isBFrame; }
+	bool IsBFrame() const { return isBFrame; }
+
+	void SetPresentationTimestamp(uint64_t ts) { presentationTimestamp = ts;}
+	uint64_t GetPresentationTimestamp() const { return presentationTimestamp;}
+
 	void Reset() 
 	{
 		//Reset media frame
 		MediaFrame::Reset();
 		//No intra
-		SetIntra(false);
+		SetIntra(false);		
+		//Reset B frame
+		SetBFrame(false);
 		//No new config
 		ClearCodecConfig();
 		//Clear layers
 		layers.clear();
+
+		width		= 0;
+		height		= 0;
+		targetBitrate	= 0;
+		targetFps	= 0;
+		cvo.reset();
+		presentationTimestamp = 0;
 	}
 	
 private:
 	VideoCodec::Type codec;
 	bool	 isIntra	= false;
+	bool	 isBFrame	= false;
 	uint32_t width		= 0;
 	uint32_t height		= 0;
 	uint32_t targetBitrate	= 0;
 	uint32_t targetFps	= 0;
 	std::vector<LayerFrame> layers;
 	std::optional<VideoOrientation> cvo;
+	uint64_t presentationTimestamp = 0;
 };
 
 
@@ -150,7 +176,9 @@ public:
 	virtual ~VideoOutput() = default;
 
 	virtual void ClearFrame() = 0;
-	virtual int NextFrame(const VideoBuffer::const_shared& videoBuffer)=0;
+
+	// Returns the current occupancy of the frame buffer queue
+	virtual size_t NextFrame(const VideoBuffer::const_shared& videoBuffer)=0;
 };
 
 
@@ -174,16 +202,29 @@ public:
 	VideoDecoder(VideoCodec::Type type) : type(type)
 	{};
 	virtual ~VideoDecoder() = default;
-
-	virtual int GetWidth()=0;
-	virtual int GetHeight()=0;
-	virtual int Decode(const uint8_t *in,uint32_t len) = 0;
-	virtual int DecodePacket(const uint8_t *in,uint32_t len,int lost,int last)=0;
-	virtual const VideoBuffer::shared& GetFrame()=0;
-	virtual bool  IsKeyFrame()=0;
+	virtual int Decode(const VideoFrame::const_shared &frame) = 0;
+	virtual VideoBuffer::shared GetFrame() = 0;
 public:
 	VideoCodec::Type type;
 
 };
+
+// Used by decoders after potentially reordering so needs to copy all timing info 
+// from the given source to the decoded frame timestamp. 
+//
+// Note: This will copy the presentation time as the reference timestamp now
+// this video data has been decoded/presented
+inline void CopyPresentedTimingInfo(const VideoFrame::const_shared& videoFrame, VideoBuffer::shared& videoBuffer)
+{
+	if (!videoFrame)
+		return;
+
+	videoBuffer->SetTime(videoFrame->GetTime());
+	videoBuffer->SetTimestamp(videoFrame->GetPresentationTimestamp());
+	videoBuffer->SetClockRate(videoFrame->GetClockRate());
+
+	if (videoFrame->GetSenderTime())
+		videoBuffer->SetSenderTime(videoFrame->GetSenderTime());
+}
 
 #endif

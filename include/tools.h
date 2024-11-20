@@ -11,6 +11,7 @@
 #include <signal.h>
 #include <climits>
 #include <pthread.h>
+#include <stdarg.h>
 
 int Log(const char *msg, ...);
 
@@ -235,9 +236,11 @@ inline DWORD get3(const BYTE *data,size_t i) { return (DWORD)(data[i+2]) | ((DWO
 inline DWORD get4(const BYTE *data,size_t i) { return (DWORD)(data[i+3]) | ((DWORD)(data[i+2]))<<8 | ((DWORD)(data[i+1]))<<16 | ((DWORD)(data[i]))<<24; }
 inline QWORD get8(const BYTE *data,size_t i) { return ((QWORD)get4(data,i))<<32 | get4(data,i+4);	}
 
-inline DWORD get3Reversed(const BYTE *data,size_t i) { return (DWORD)(data[i]) | ((DWORD)(data[i+1]))<<8 | ((DWORD)(data[i+2]))<<16; }
+inline DWORD get2Reversed(const BYTE* data, size_t i) { return (DWORD)(data[i]) | ((DWORD)(data[i + 1])) << 8; }
+inline DWORD get3Reversed(const BYTE *data,size_t i)  { return (DWORD)(data[i]) | ((DWORD)(data[i + 1])) << 8 | ((DWORD)(data[i + 2])) << 16; }
+inline DWORD get4Reversed(const BYTE* data, size_t i) { return (DWORD)(data[i]) | ((DWORD)(data[i + 1])) << 8 | ((DWORD)(data[i + 2])) << 16 | ((DWORD)(data[i + 3])) << 24; }
 
-inline DWORD getN(BYTE n, BYTE* data, size_t i)
+inline DWORD getN(BYTE n, const BYTE* data, size_t i)
 {
 	switch (n)
 	{
@@ -486,6 +489,21 @@ inline DWORD pad32(DWORD size)
 		return size;
 }
 
+/**
+ * Align memory to 4 bytes boundary and pad the skipped memory with zero.
+ * 
+ * @param data The data to be aligned
+ * @param size The size of existing data
+ * 
+ * @return The size after aligned 
+ */
+inline uint32_t alignMemory4Bytes(uint8_t* data, uint32_t size)
+{
+	auto aligned = pad32(size);
+	memset(data + size, 0, aligned - size);
+	return aligned;
+}
+
 // Counts the number of bits used in the binary representation of val.
 
 inline size_t CountBits(uint64_t val)
@@ -498,4 +516,66 @@ inline size_t CountBits(uint64_t val)
 	}
 	return count;
 }
+
+/**
+ * Atomatically write a 128bit integer to an address
+ */
+inline void SyncWriteUint128(__uint128_t *dst, __uint128_t value)
+{
+    __uint128_t dstval = 0;
+    __uint128_t olddst = 0;
+    
+    dstval = *dst;
+    do
+    {
+        olddst = dstval;
+        dstval = __sync_val_compare_and_swap(dst, dstval, value);
+    }
+    while(dstval != olddst);
+}
+
+/**
+ * Convert timestamp from one clock rate to another
+ * 
+ * @param ts The input timestamp
+ * @param originalRate The clock rate of the input timestamp
+ * @param targetRate The target clock rate
+ * 
+ * @return The timestamp basing on the target clock rate
+ */
+template<typename T>
+static constexpr T ConvertTimestampClockRate(T ts, uint64_t originalRate, uint64_t targetRate)
+{
+	static_assert(sizeof(T) >= 8);
+	return originalRate == targetRate ? ts : (ts * T(targetRate) / T(originalRate));
+}
+
+/**
+ * @brief Format string
+ * 
+ * @param fmt Format with specificers
+ * @param ... Aguments
+ * @return The result string
+ */
+inline std::string FormatString(const char* fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	auto sz = std::vsnprintf(nullptr, 0, fmt, ap);
+	va_end(ap);
+	
+	std::vector<char> tmp(sz + 1);
+	va_start(ap, fmt);
+	sz = std::vsnprintf(tmp.data(), tmp.size(), fmt, ap);
+	va_end(ap);
+	
+	return std::string(tmp.data(), sz);
+}
+
+template<typename E> 
+constexpr auto ToUType(E enumerator) noexcept
+{ 
+	return static_cast<std::underlying_type_t<E>>(enumerator);
+}
+
 #endif

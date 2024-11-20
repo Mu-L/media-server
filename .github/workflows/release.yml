@@ -10,12 +10,27 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+    - uses: actions/checkout@v3
+      with:
+        submodules: 'recursive'
     - name: Initialize submodules
       run: git submodule update --init --recursive
-    - uses: actions/checkout@v1
+    - uses: actions/checkout@v3
+    - name: Install pre-requisite package
+      run: |
+        sudo apt-get update
+        sudo apt-get install --fix-missing -y libavcodec-dev libx264-dev libx265-dev libavutil-dev libvpx-dev libswscale-dev libswresample-dev libavformat-dev libssl-dev libavfilter-dev libfftw3-dev libgsm1-dev libopus-dev libmp3lame-dev libspeex-dev
+        sudo wget https://ftp.debian.org/debian/pool/main/a/aom/libaom3_3.10.0-1_amd64.deb
+        sudo wget https://ftp.debian.org/debian/pool/main/a/aom/libaom-dev_3.10.0-1_amd64.deb
+        sudo dpkg -i libaom3_3.10.0-1_amd64.deb libaom-dev_3.10.0-1_amd64.deb
     - name: Configure
       run: mkdir build && cd build && cmake -DCMAKE_BUILD_TYPE=Release ..
+    - name: Get number of CPU cores
+      uses: "./.github/actions/github-actions-cpu-cores-2.0.0"
+      id: cpu-cores
     - name: make
-      run: cd build && make
+      run: cd build && make -j${{ steps.cpu-cores.outputs.count }} 
     - name: Run Test
       run: cd build && ./MediaServerUnitTest
+    - name: Run Legacy Test
+      run: cd build && ./MediaServerLegacyTest

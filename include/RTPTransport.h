@@ -19,13 +19,13 @@
 #include "config.h"
 #include "stunmessage.h"
 #include "dtls.h"
-#include "EventLoop.h"
+#include "NetEventLoop.h"
 #include "Datachannels.h"
 #include "Endpoint.h"
 #include "PCAPFile.h"
 
 class RTPTransport :
-	public EventLoop::Listener,
+	public NetEventLoop::Listener,
 	public DTLSConnection::Listener
 {
 public:
@@ -101,11 +101,11 @@ private:
 	int 	simRtcpSocket;
 	int 	simPort;
 	int	simRtcpPort;
-	EventLoop rtpLoop;
-	EventLoop rtcpLoop;
+	NetEventLoop rtpLoop;
+	NetEventLoop rtcpLoop;
 
 	datachannels::impl::Endpoint endpoint;
-	DTLSConnection dtls;
+	std::shared_ptr<DTLSConnection> dtls;
 	bool	encript;
 	bool	decript;
 	srtp_t	send;

@@ -2,6 +2,7 @@
 #include "rtmp/rtmppacketizer.h"
 #include "av1/AV1.h"
 #include "av1/Obu.h"
+#include "h264/H26xNal.h"
 
 
 VideoCodec::Type GetRtmpFrameVideoCodec(const RTMPVideoFrame& videoFrame)
@@ -10,33 +11,81 @@ VideoCodec::Type GetRtmpFrameVideoCodec(const RTMPVideoFrame& videoFrame)
 	{
 		switch (videoFrame.GetVideoCodec())
 		{
-		case RTMPVideoFrame::AVC:
-			return VideoCodec::H264;
-		default:
-			return VideoCodec::UNKNOWN;
+			case RTMPVideoFrame::AVC:
+				return VideoCodec::H264;
+			default:
+				return VideoCodec::UNKNOWN;
 		}
 	}
 	
 	switch (videoFrame.GetVideoCodecEx())
 	{
-	case RTMPVideoFrame::HEVC: 
-		return VideoCodec::H265;
+		case RTMPVideoFrame::H264:
+			return VideoCodec::H264;
+
+		case RTMPVideoFrame::HEVC: 
+			return VideoCodec::H265;
 	
-	case RTMPVideoFrame::AV1: 
-		return VideoCodec::AV1;
+		case RTMPVideoFrame::AV1: 
+			return VideoCodec::AV1;
 	
-	case RTMPVideoFrame::VP9: 
-		return VideoCodec::VP9;
+		case RTMPVideoFrame::VP9: 
+			return VideoCodec::VP9;
 		
-	default:
-		return VideoCodec::UNKNOWN;
+		default:
+			return VideoCodec::UNKNOWN;
+	}
+}
+
+AudioCodec::Type GetRtmpFrameAudioCodec(const RTMPAudioFrame& audioFrame)
+{
+	switch (audioFrame.GetAudioCodec())
+	{
+		case RTMPAudioFrame::AAC:
+			return AudioCodec::AAC;
+		case RTMPAudioFrame::G711A:
+			return AudioCodec::PCMA;
+		case RTMPAudioFrame::G711U:
+			return AudioCodec::PCMU;
+		default:
+			return AudioCodec::UNKNOWN;
+	}
+}
+
+std::unique_ptr<RTMPVideoPacketizer> CreateRTMPVideoPacketizer(VideoCodec::Type type)
+{
+	switch (type)
+	{
+		case VideoCodec::H264:
+			return std::unique_ptr<RTMPVideoPacketizer>(new RTMPAVCPacketizer());
+		case VideoCodec::H265:
+			return std::unique_ptr<RTMPVideoPacketizer>(new RTMPHEVCPacketizer());
+		case VideoCodec::AV1:
+			return std::unique_ptr<RTMPVideoPacketizer>(new RTMPAv1Packetizer());
+		default:
+			return nullptr;
+	}
+}
+
+std::unique_ptr<RTMPAudioPacketizer> CreateRTMPAudioPacketizer(AudioCodec::Type type)
+{
+	switch (type)
+	{
+		case AudioCodec::AAC:
+			return std::unique_ptr<RTMPAudioPacketizer>(new RTMPAACPacketizer());
+		case AudioCodec::PCMA:
+			return std::unique_ptr<RTMPAudioPacketizer>(new RTMPG711APacketizer());
+		case AudioCodec::PCMU:
+			return std::unique_ptr<RTMPAudioPacketizer>(new RTMPG711UPacketizer());
+		default:
+			return nullptr;
 	}
 }
 
 template<typename DescClass, VideoCodec::Type codec>
-std::unique_ptr<VideoFrame> RTMPPacketizer<DescClass, codec>::PrepareFrame(RTMPVideoFrame* videoFrame)
+std::unique_ptr<VideoFrame> RTMPVideoPacketizerImpl<DescClass, codec>::PrepareFrame(RTMPVideoFrame* videoFrame)
 {
-	//Debug("-RTMPAVCPacketizer::AddFrame() [size:%u,intra:%d]\n",videoFrame->GetMediaSize(), videoFrame->GetFrameType() == RTMPVideoFrame::INTRA);
+	//UltraDebug("-RTMPPacketizer::PrepareFrame() [codec:%d, isConfig:%d, isCodedFrames:%d]\n", GetRtmpFrameVideoCodec(*videoFrame), videoFrame->IsConfig(), videoFrame->IsCodedFrames());
 	
 	//Check it is processing codec
 	if (GetRtmpFrameVideoCodec(*videoFrame) != codec)
@@ -47,32 +96,44 @@ std::unique_ptr<VideoFrame> RTMPPacketizer<DescClass, codec>::PrepareFrame(RTMPV
 	if (videoFrame->IsConfig())
 	{
 		//Parse it
-		if(desc.Parse(videoFrame->GetMediaData(),videoFrame->GetMediaSize()))
+		if(desc.Parse(videoFrame->GetMediaData(),videoFrame->GetMediaSize())) 
+		{
 			//Got config
 			gotConfig = true;
-		else
+		} else {
 			//Show error
-			Error(" RTMPPacketizer::AddFrame() | Config parse error\n");
+			Warning(" RTMPPacketizer::PrepareFrame() | Config parse error\n");
+			//Dump data
+			videoFrame->Dump();
+			::Dump(videoFrame->GetMediaData(), videoFrame->GetMediaSize());
+		}
 		//DOne
 		return nullptr;
 	}
 	
 	//It should be a nalu then
 	if (!videoFrame->IsCodedFrames())
+	{
+		//Error
+		Warning("-RTMPPacketizer::PrepareFrame() | Not a coded frame\n");
 		//DOne
 		return nullptr;
+	}
 	
 	//Ensure that we have got config
 	if (!gotConfig)
 	{
 		//Error
-		Debug("-RTMPPacketizer::AddFrame() | Got media frame but not valid description yet\n");
+		Warning("-RTMPPacketizer::PrepareFrame() | Got media frame but not valid description yet\n");
 		//DOne
 		return nullptr;
 	}
 	
 	//Create frame
 	auto frame = std::make_unique<VideoFrame>(codec,videoFrame->GetSize()+desc.GetSize()+256);
+
+	//Set intra flag
+	frame->SetIntra(videoFrame->GetFrameType() == RTMPVideoFrame::INTRA);
 	
 	//Set time
 	frame->SetTime(videoFrame->GetTimestamp());
@@ -80,7 +141,11 @@ std::unique_ptr<VideoFrame> RTMPPacketizer<DescClass, codec>::PrepareFrame(RTMPV
 	frame->SetClockRate(1000);
 	//Set timestamp
 	frame->SetTimestamp(videoFrame->GetTimestamp());
-	
+	frame->SetPresentationTimestamp(videoFrame->GetTimestamp() + videoFrame->GetCompositionTimeOffset());
+
+
+	//Set Sender time
+	frame->SetSenderTime(videoFrame->GetSenderTime());
 	//Get AVC data size
 	auto configSize = desc.GetSize();
 	//Allocate mem
@@ -95,8 +160,8 @@ std::unique_ptr<VideoFrame> RTMPPacketizer<DescClass, codec>::PrepareFrame(RTMPV
 	return frame;
 }
 
-template<typename DescClass, typename SPSClass, VideoCodec::Type codec>
-std::unique_ptr<VideoFrame> RTMPH26xPacketizer<DescClass, SPSClass, codec>::AddFrame(RTMPVideoFrame* videoFrame)
+template<typename DescClass, typename SPSClass, typename PPSClass, VideoCodec::Type codec>
+std::unique_ptr<VideoFrame> RTMPH26xPacketizer<DescClass, SPSClass, PPSClass, codec>::AddFrame(RTMPVideoFrame* videoFrame)
 {
 	//Debug("-RTMPH26xPacketizer::AddFrame() [size:%u,intra:%d]\n",videoFrame->GetMediaSize(), videoFrame->GetFrameType() == RTMPVideoFrame::INTRA);
 	
@@ -149,12 +214,10 @@ std::unique_ptr<VideoFrame> RTMPH26xPacketizer<DescClass, SPSClass, codec>::AddF
 			
 			//Parse sps skipping nal header
 			auto nalHeaderSize = (codec == VideoCodec::H264) ? 1 : 2;
-			SPSClass sps;
-			if (sps.Decode(desc.GetSequenceParameterSet(i)+nalHeaderSize,desc.GetSequenceParameterSetSize(i)-nalHeaderSize))
+			SPSClass localSps;
+			if (localSps.Decode(desc.GetSequenceParameterSet(i)+nalHeaderSize,desc.GetSequenceParameterSetSize(i)-nalHeaderSize))
 			{
-				//Set dimensions
-				frame->SetWidth(sps.GetWidth());
-				frame->SetHeight(sps.GetHeight());
+				sps = localSps;
 			}
 		}
 		//Decode PPS
@@ -170,15 +233,59 @@ std::unique_ptr<VideoFrame> RTMPH26xPacketizer<DescClass, SPSClass, codec>::AddF
 			
 			//Crete rtp packet
 			frame->AddRtpPacket(ini,desc.GetPictureParameterSetSize(i),nullptr,0);
+			
+			//Parse sps skipping nal header
+			auto nalHeaderSize = (codec == VideoCodec::H264) ? 1 : 2;
+			PPSClass localPps;
+			if (localPps.Decode(desc.GetPictureParameterSet(i)+nalHeaderSize,desc.GetPictureParameterSetSize(i)-nalHeaderSize))
+			{
+				pps = localPps;
+			}
 		}
-		//Set intra flag
-		frame->SetIntra(true);
+
+		if (videoFrame->GetSenderTime ())
+		{
+
+			//Add unregistered SEI message NAL
+			uint8_t sei[28] = { 0x06, 0x05, 0x18, 0x9a, 0x21, 0xf3, 0xbe, 0x31,
+					    0xf0, 0x4b, 0x78, 0xb0, 0xbe, 0xc7, 0xf7, 0xdb,
+					    0xb9, 0x72, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00,
+					    0x00, 0x00, 0x00, 0x80 };
+
+			//Set timestamp
+			set8 (sei, 19, videoFrame->GetSenderTime ());
+
+			//Escape nal
+			uint8_t seiEscaped[sizeof (sei) * 2];
+			auto seiSize = NalEscapeRbsp (seiEscaped, sizeof (seiEscaped), sei, sizeof (sei)).value ();
+
+			//Set size after escaping
+			setN (nalUnitLength, nalHeader, 0, seiSize);
+
+			//Append nal size header
+			frame->AppendMedia (nalHeader, nalUnitLength);
+
+			//Append nal
+			auto ini = frame->AppendMedia (seiEscaped, seiSize);
+
+			//Crete rtp packet
+			frame->AddRtpPacket (ini, seiSize, nullptr, 0);
+		}
+	}
+	
+	if (sps.has_value())
+	{
+		//Set dimensions
+		frame->SetWidth(sps->GetWidth());
+		frame->SetHeight(sps->GetHeight());
 	}
 
 	//Malloc
-	BYTE *data = videoFrame->GetMediaData();
+	const BYTE *data = videoFrame->GetMediaData();
 	//Get size
 	DWORD size = videoFrame->GetMediaSize();
+	
+	bool parsingFrameType = true;
 	
 	//Chop into NALs
 	while(size>nalUnitLength)
@@ -190,16 +297,109 @@ std::unique_ptr<VideoFrame> RTMPH26xPacketizer<DescClass, SPSClass, codec>::AddF
 		if (nalSize+nalUnitLength>size)
 		{
 			//Error
-			Error("-RTMPAVCPacketizer::AddFrame() Error adding size=%d nalSize=%d fameSize=%d\n",size,nalSize,videoFrame->GetMediaSize());
+			Warning("-RTMPAVCPacketizer::AddFrame() Error adding size=%d nalSize=%d fameSize=%d\n",size,nalSize,videoFrame->GetMediaSize());
 			//Skip
 			break;
 		}
 
 		//Get NAL start
-		BYTE* nal = data + nalUnitLength;
-
-		//Skip fill data nalus for h264
-		if (codec == VideoCodec::H264 && nal[0] == 12)
+		const BYTE* nal = data + nalUnitLength;
+		
+		bool skip = false;
+		if constexpr (std::is_same_v<SPSClass, H264SeqParameterSet>)
+		{
+			const AvcNaluType nalUnitType = AvcNaluType(nal[0] & 0x1f);
+			
+			switch (nalUnitType)
+			{
+			case AvcNaluType::Slice:
+			case AvcNaluType::Dpa:
+			case AvcNaluType::IdrSlice:
+				if (parsingFrameType && sps.has_value() && pps.has_value())
+				{
+					H264SliceHeader header;
+					if (header.Decode(nal + 1, nalSize - 1, *sps))
+					{
+						auto sliceType = header.GetSliceType();
+						frame->SetBFrame(sliceType == 1 || sliceType == 6);
+						
+						parsingFrameType = false;
+					}
+				}
+				break;
+			case AvcNaluType::Sps:
+				// Skip if we already have sps inserted from the AVCDescriptor. 
+				// Safari may complain about duplicated parameter sets.
+				skip = desc.GetNumOfSequenceParameterSets() > 0;
+				break;
+			case AvcNaluType::Pps:
+				// Skip if we already have pps inserted from the AVCDescriptor.  
+				// Safari may complain about duplicated parameter sets.
+				skip = desc.GetNumOfPictureParameterSets() > 0;
+				break;
+			case AvcNaluType::FillerData:
+				//Skip fill data nalus for h264
+				skip = true;
+				break;
+			default:
+				break;
+			}
+		}
+		else if constexpr (std::is_same_v<SPSClass, H265SeqParameterSet>)
+		{
+			auto naluHeader = get2(nal, 0);
+			BYTE nalUnitType = (naluHeader >> 9) & 0b111111;
+			
+			switch (nalUnitType)
+			{
+			case HEVC_RTP_NALU_Type::TRAIL_N:
+			case HEVC_RTP_NALU_Type::TRAIL_R:
+			case HEVC_RTP_NALU_Type::TSA_N:
+			case HEVC_RTP_NALU_Type::TSA_R:
+			case HEVC_RTP_NALU_Type::STSA_N:
+			case HEVC_RTP_NALU_Type::STSA_R:
+			case HEVC_RTP_NALU_Type::RADL_N:
+			case HEVC_RTP_NALU_Type::RADL_R:
+			case HEVC_RTP_NALU_Type::RASL_N:
+			case HEVC_RTP_NALU_Type::RASL_R:
+			case HEVC_RTP_NALU_Type::BLA_W_LP:
+			case HEVC_RTP_NALU_Type::BLA_W_RADL:
+			case HEVC_RTP_NALU_Type::BLA_N_LP:
+			case HEVC_RTP_NALU_Type::IDR_W_RADL:
+			case HEVC_RTP_NALU_Type::IDR_N_LP:
+			case HEVC_RTP_NALU_Type::CRA_NUT:
+				if (parsingFrameType && sps.has_value() && pps.has_value())
+				{
+					H265SliceHeader header;
+					if (header.Decode(nal + 2, nalSize - 2, nalUnitType, *pps, *sps))
+					{
+						frame->SetBFrame(header.GetSliceType() == 0);
+						
+						parsingFrameType = false;
+					}
+				}
+				break;
+			case HEVC_RTP_NALU_Type::VPS:
+				// Skip if we already have vps inserted from the HEVCDescriptor. 
+				// Safari may complain about duplicated parameter sets.
+				skip = desc.GetNumOfVideoParameterSets() > 0;
+				break;
+			case HEVC_RTP_NALU_Type::SPS:
+				// Skip if we already have sps inserted from the HEVCDescriptor. 
+				// Safari may complain about duplicated parameter sets.
+				skip = desc.GetNumOfSequenceParameterSets() > 0;
+				break;
+			case HEVC_RTP_NALU_Type::PPS:
+				// Skip if we already have pps inserted from the HEVCDescriptor. 
+				// Safari may complain about duplicated parameter sets.
+				skip = desc.GetNumOfPictureParameterSets() > 0;
+				break;
+			default:
+				break;
+			}
+		}
+		
+		if (skip)
 		{
 			//Skip it
 			data += nalUnitLength + nalSize;
@@ -291,145 +491,161 @@ std::unique_ptr<VideoFrame> RTMPH26xPacketizer<DescClass, SPSClass, codec>::AddF
 }
 
 
-template class RTMPH26xPacketizer<AVCDescriptor, H264SeqParameterSet, VideoCodec::H264>;
-template class RTMPH26xPacketizer<HEVCDescriptor, H265SeqParameterSet, VideoCodec::H265>;
+template class RTMPH26xPacketizer<AVCDescriptor, H264SeqParameterSet, H264PictureParameterSet, VideoCodec::H264>;
+template class RTMPH26xPacketizer<HEVCDescriptor, H265SeqParameterSet, H265PictureParameterSet, VideoCodec::H265>;
 
 
 std::unique_ptr<VideoFrame> RTMPAv1Packetizer::AddFrame(RTMPVideoFrame* videoFrame)
 {
-	//Debug("-RTMPAv1Packetizer::AddFrame() [size:%u,intra:%d]\n",videoFrame->GetMediaSize(), videoFrame->GetFrameType() == RTMPVideoFrame::INTRA);
+	//UltraDebug("-RTMPAv1Packetizer::AddFrame() [size:%u,intra:%d]\n",videoFrame->GetMediaSize(), videoFrame->GetFrameType() == RTMPVideoFrame::INTRA);
 	
 	auto frame = PrepareFrame(videoFrame);
 	if (!frame) return nullptr;
 		
+	ObuHeader obuHeader;
+	RtpAv1AggreationHeader header;
+
 	//If is an intra
 	if (videoFrame->GetFrameType()==RTMPVideoFrame::INTRA)
 	{
+		//TODO: We are probably duplicating the sequence header here
 		if (desc.sequenceHeader)
 		{
-			auto info = GetObuInfo(desc.sequenceHeader->data(), desc.sequenceHeader->size());
-			
-			auto ini = frame->AppendMedia(desc.sequenceHeader->data(),desc.sequenceHeader->size());
-			ini += info->obuSize - info->payloadSize;		
-			
-			SequenceHeaderObu sho;
-			if (info && sho.Parse(info->payload, info->payloadSize))
+			auto ini = frame->AppendMedia(*desc.sequenceHeader);
+			BufferReader reader(*desc.sequenceHeader);
+
+			if (obuHeader.Parse(reader))
 			{
-				//Set dimensions
-				frame->SetWidth(sho.max_frame_width_minus_1 + 1);
-				frame->SetHeight(sho.max_frame_height_minus_1 + 1);
+				//Get length from header or read the rest available
+				auto payloadSize = obuHeader.length.value_or(reader.GetLeft());
+				
+				//Skip headers
+				ini += reader.Mark();
+
+				//Debug("-RTMPAv1Packetizer::AddFrame() desc [left:%llu,payloadSize:%llu, pos:%llu]\n", reader.GetLeft(), payloadSize, ini);
+
+				SequenceHeaderObu sho;
+				if (sho.Parse(reader))
+				{
+					//Set dimensions
+					frame->SetWidth(sho.max_frame_width_minus_1 + 1);
+					frame->SetHeight(sho.max_frame_height_minus_1 + 1);
+				}
+
+				//RTP aggregation header for only 1 OBU segment
+				header.field.W = 1; // Send one OBU element each time
+				header.field.Z = 0; // No prev fragment
+				header.field.Y = 0; // No next fragment
+				header.field.N = frame->GetRtpPacketizationInfo().empty() && frame->IsIntra() ? 1 : 0; // First packet of new coded sequence
+
+				//RTP preffix
+				Buffer preffix(header.GetSize() + obuHeader.GetSize());
+				BufferWritter writter(preffix);
+
+				//Write fragmentation header 
+				header.Serialize(writter);
+				//Remove length
+				obuHeader.length.reset();
+				//Write OBU header
+				obuHeader.Serialize(writter);
+				//Add rtp packet
+				frame->AddRtpPacket(ini, payloadSize, writter.GetData(), writter.GetLength());
 			}
-			
-			/*		
-			* 0 1 2 3 4 5 6 7
-			* +-+-+-+-+-+-+-+-+
-			*|Z|Y| W |N|-|-|-|
-			* +-+-+-+-+-+-+-+-+
-			*/
-			RtpAv1AggreationHeader header;
-			memset((void*)&header, 0, sizeof(RtpAv1AggreationHeader));
-			header.W = 1; // Send one OBU element each time
-			
-			uint8_t obuHeader[2];
-			memcpy(obuHeader, desc.sequenceHeader->data(), info->headerSize);
-			obuHeader[0] &= ~0b0000'0010; // Clear has_size_field
-		
-			header.Z = 0; // No prev fragment
-			header.Y = 0; // No next fragment
-			header.N = 1; // New coded sequence
-					
-			uint8_t prefix[3];
-			memcpy(&prefix[0], (void*)&header, 1);
-			memcpy(&prefix[1], (void*)&obuHeader, info->headerSize);
-			
-			frame->AddRtpPacket(ini, info->payloadSize, prefix, info->headerSize + 1);
 		}
 		
-		//Set intra flag
-		frame->SetIntra(true);
+
 	}
 
-	BYTE *data = videoFrame->GetMediaData();
-	//Get size
+	//Get media data and size
+	const BYTE *data = videoFrame->GetMediaData();
 	DWORD size = videoFrame->GetMediaSize();
+
+	//Copy data to frame
+	auto ini = frame->AppendMedia(data, size);
+
+	//Get reader for av1 encoded packet
+	BufferReader reader(data, size);
+
+	//Get initial position of reader
+	auto mark = reader.Mark();
 	
-	//Chop into OBUs
-	while(size>0)
-	{	
-		auto info = GetObuInfo(data, size);
-		if (!info || info->obuSize > size) return nullptr;
-		
-		/*		
-		* 0 1 2 3 4 5 6 7
-		* +-+-+-+-+-+-+-+-+
-		*|Z|Y| W |N|-|-|-|
-		* +-+-+-+-+-+-+-+-+
-		*/
-		RtpAv1AggreationHeader header;
-		memset((void*)&header, 0, sizeof(RtpAv1AggreationHeader));
-		header.W = 1; // Send one OBU element each time
-		
-		uint8_t obuHeader[2];
-		memcpy(obuHeader, data, info->headerSize);
-		obuHeader[0] &= ~0b0000'0010; // Clear has_size_field
-			
-		uint8_t prefix[3];
-	
-		auto ini = frame->AppendMedia(data, info->obuSize);
-		ini += info->obuSize - info->payloadSize;	// We will replace the OBU header
-		
-		data += info->obuSize;
-		size -= info->obuSize;
-		
-		bool firstSegment = true;
-		if ((info->headerSize + info->payloadSize + 1) > RTPPAYLOADSIZE)
+	//For each obu
+	while (reader.GetLeft() && obuHeader.Parse(reader))
+	{
+		//Get length from header or read the rest available
+		auto payloadSize = obuHeader.length.value_or(reader.GetLeft());
+		//Skip header and size from media data
+		auto pos = ini + reader.GetOffset(mark);
+
+		//UltraDebug("-RTMPAv1Packetizer::AddFrame() [left:%llu,payloadSize:%llu, pos:%llu]\n", reader.GetLeft(), payloadSize, pos);
+
+		//Ensure we have enought data for the rest of the obu
+		if (!reader.Assert(payloadSize))
+			break;
+
+		//Skip the rest of the obu
+		reader.Skip(payloadSize);
+
+		//We are not going to to write the length of the obu framgent
+		obuHeader.length.reset();
+
+		//If we need to fragmentize into multiple rtp packets
+		if ((payloadSize + header.GetSize() + obuHeader.GetSize()) > RTPPAYLOADSIZE)
 		{
-			auto payloadSize = info->payloadSize;
+			bool firstSegment = true;
+
 			while (payloadSize)
 			{
-				//Get fragment size
-				size_t fragSize = 0;
+				//Calculate fragment size
+				auto fragSize = std::min(payloadSize, size_t(RTPPAYLOADSIZE - header.GetSize() - obuHeader.GetSize()));
+
+				//RTP aggregation header for only 1 OBU segment
+				header.field.W = 1;										 // Send one OBU element each time
+				header.field.Z = !firstSegment;							 // Has prev fragment
+				header.field.Y = (fragSize == payloadSize) ? 0 : 1;		 // Has next fragment
+				header.field.N = frame->GetRtpPacketizationInfo().empty() && frame->IsIntra() ? 1 : 0; // First packet of new coded sequence
+
+				//RTP preffix with max possible size
+				Buffer preffix(header.GetSize() + obuHeader.GetSize());
+				BufferWritter writter(preffix);
+
+				//Write fragmentation header 
+				header.Serialize(writter);
+
 				if (firstSegment)
-				{	
-					fragSize = std::min(payloadSize, size_t(RTPPAYLOADSIZE - info->headerSize - 1));
-					
-					header.Z = 0; // No prev fragment
-					header.Y = 1; // Has next fragment
-					header.N = frame->IsIntra() ? 1 : 0; // New coded sequence
-					 
-					memcpy(&prefix[0], (void*)&header, 1);
-					memcpy(&prefix[1], (void*)&obuHeader, info->headerSize);
-					frame->AddRtpPacket(ini, fragSize, prefix, info->headerSize + 1);
+				{
+					//Write OBU header on first segment
+					obuHeader.Serialize(writter);
+					//Next is not first
 					firstSegment = false;
 				}
-				else
-				{
-					fragSize = std::min(payloadSize, size_t(RTPPAYLOADSIZE - 1));
-					
-					header.Z = 1;	// Has prev fragment
-					header.Y = (fragSize==payloadSize) ? 0 : 1;
-					header.N = 0;   // Not new coded sequence
-					
-					memcpy(&prefix[0], (void*)&header, 1);
-					frame->AddRtpPacket(ini, fragSize, prefix, 1);					
-				}
-				
-				//Next
-				ini += fragSize;
-				//Remove size
+
+				//Add rtp packet
+				frame->AddRtpPacket(pos, fragSize, writter.GetData(), writter.GetLength());
+				//Next fragment
+				pos += fragSize;
+				//Remove fragment size from total
 				payloadSize -= fragSize;
 			}
 		}
 		else
 		{
-			header.Z = 0; // No prev fragment
-			header.Y = 0; // No next fragment
-			header.N = frame->IsIntra() ? 1 : 0; // New coded sequence
-					
-			memcpy(&prefix[0], (void*)&header, 1);
-			memcpy(&prefix[1], (void*)&obuHeader, info->headerSize);
-			
-			frame->AddRtpPacket(ini, info->payloadSize, prefix, info->headerSize + 1);
+			//RTP aggregation header for only 1 OBU segment
+			header.field.W = 1; // Send one OBU element each time
+			header.field.Z = 0; // No prev fragment
+			header.field.Y = 0; // No next fragment
+			header.field.N = frame->GetRtpPacketizationInfo().empty() && frame->IsIntra() ? 1 : 0; // First packet of new coded sequence
+
+			//RTP preffix
+			Buffer preffix(header.GetSize() + obuHeader.GetSize());
+			BufferWritter writter(preffix);
+
+			//Write fragmentation header 
+			header.Serialize(writter);
+			//Write OBU header
+			obuHeader.Serialize(writter);
+			//Add rtp packet
+			frame->AddRtpPacket(pos, payloadSize, writter.GetData(), writter.GetLength());
 		}
 	}
 
@@ -440,11 +656,11 @@ std::unique_ptr<VideoFrame> RTMPAv1Packetizer::AddFrame(RTMPVideoFrame* videoFra
 
 std::unique_ptr<AudioFrame> RTMPAACPacketizer::AddFrame(RTMPAudioFrame* audioFrame)
 {
-	//Debug("-RTMPAACPacketizer::AddFrame() [size:%u,aac:%d,codec:%d]\n",audioFrame->GetMediaSize(),audioFrame->GetAACPacketType(),audioFrame->GetAudioCodec());
+	//UltraDebug("-RTMPAACPacketizer::AddFrame() [size:%u,aac:%d,codec:%d]\n",audioFrame->GetMediaSize(),audioFrame->GetAACPacketType(),audioFrame->GetAudioCodec());
 	
 	if (audioFrame->GetAudioCodec()!=RTMPAudioFrame::AAC)
 	{
-		Debug("-RTMPAACPacketizer::AddFrame() | Skip non-AAC codec\n");
+		Debug("-RTMPAACPacketizer::AddFrame() | Skiping non-AAC codec\n");
 		return nullptr;
 	}
 	
@@ -454,14 +670,15 @@ std::unique_ptr<AudioFrame> RTMPAACPacketizer::AddFrame(RTMPAudioFrame* audioFra
 		//Handle specific settings
 		gotConfig = aacSpecificConfig.Decode(audioFrame->GetMediaData(),audioFrame->GetMediaSize());
 		
-		Debug("-RTMPAACPacketizer::AddFrame() | Skip AACSequenceHeader frame\n");
+		Debug("-RTMPAACPacketizer::AddFrame() | Got AACSequenceHeader frame\n");
+		aacSpecificConfig.Dump();
 		return nullptr;
 	}
 	
 	if (audioFrame->GetAACPacketType()!=RTMPAudioFrame::AACRaw)
 	{
 		//DOne
-		Debug("-RTMPAACPacketizer::AddFrame() | Skp AACRaw frame\n");
+		Debug("-RTMPAACPacketizer::AddFrame() | Skiping non AACRaw frame\n");
 		return nullptr;
 	}
 
@@ -517,6 +734,61 @@ std::unique_ptr<AudioFrame> RTMPAACPacketizer::AddFrame(RTMPAudioFrame* audioFra
 	//Add aac frame in single rtp 
 	auto ini = frame->AppendMedia(audioFrame->GetMediaData(),audioFrame->GetMediaSize());
 	frame->AddRtpPacket(ini,audioFrame->GetMediaSize(),nullptr,0);
+
+	//DOne
+	return frame;
+}
+
+
+std::unique_ptr<AudioFrame> RTMPG711APacketizer::AddFrame(RTMPAudioFrame* audioFrame)
+{
+	//UltraDebug("-RTMPG711APacketizer::AddFrame() [size:%u,aac:%d,codec:%d]\n",audioFrame->GetMediaSize(),audioFrame->GetAACPacketType(),audioFrame->GetAudioCodec());
+
+	//Create frame
+	auto frame = std::make_unique<AudioFrame>(AudioCodec::PCMA);
+
+	//Set time in ms
+	frame->SetTime(audioFrame->GetTimestamp());
+
+	//Calculate timestamp in sample rate clock
+	uint64_t timestamp = audioFrame->GetTimestamp() *8;
+
+	//Set info from AAC config
+	frame->SetClockRate(8000);
+	frame->SetNumChannels(1);
+	frame->SetTimestamp(timestamp);
+	frame->SetDuration(160);
+	
+	//Add frame in single rtp 
+	auto ini = frame->AppendMedia(audioFrame->GetMediaData(), audioFrame->GetMediaSize());
+	frame->AddRtpPacket(ini, audioFrame->GetMediaSize(), nullptr, 0);
+
+	//DOne
+	return frame;
+}
+
+std::unique_ptr<AudioFrame> RTMPG711UPacketizer::AddFrame(RTMPAudioFrame* audioFrame)
+{
+	//UltraDebug("-RTMPG711UPacketizer::AddFrame() [size:%u,aac:%d,codec:%d]\n",audioFrame->GetMediaSize(),audioFrame->GetAACPacketType(),audioFrame->GetAudioCodec());
+
+	//Create frame
+	auto frame = std::make_unique<AudioFrame>(AudioCodec::PCMU);
+
+	//Set time in ms
+	frame->SetTime(audioFrame->GetTimestamp());
+
+	//Calculate timestamp in sample rate clock
+	uint64_t timestamp = audioFrame->GetTimestamp() * 8;
+
+	//Set info from AAC config
+	frame->SetClockRate(8000);
+	frame->SetNumChannels(1);
+	frame->SetTimestamp(timestamp);
+	frame->SetDuration(160);
+
+	//Add frame in single rtp 
+	auto ini = frame->AppendMedia(audioFrame->GetMediaData(), audioFrame->GetMediaSize());
+	frame->AddRtpPacket(ini, audioFrame->GetMediaSize(), nullptr, 0);
 
 	//DOne
 	return frame;

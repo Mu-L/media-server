@@ -48,13 +48,13 @@ int RTMPServer::Init(int port)
 	//Save server port
 	serverPort = port;
 
-	//I am inited
-	inited = 1;
-
 	//Init server socket
 	if (!BindServer())
 		return 0;
 
+	//I am inited
+	inited = 1;
+	
 	//Create threads
 	createPriorityThread(&serverThread,run,this,0);
 
@@ -71,12 +71,22 @@ int RTMPServer::BindServer()
 
 	//Create socket
 	server = socket(AF_INET, SOCK_STREAM, 0);
+	if (server < 0)
+		return Error("-RTMPServer::BindServer() Can't create new server socket. reason: %s\n", strerror(errno));
 
 	//Set SO_REUSEADDR on a socket to true (1):
 	int optval = 1;
-// Ignore coverity error: "this->server" is passed to a parameter that cannot be negative.
-// coverity[negative_returns]
-	(void)setsockopt(server, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
+	int result = setsockopt(server, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
+	if (result < 0)
+		Warning("-RTMPServer::BindServer() Failed to set SO_REUSEADDR on socket. reason: %s\n", strerror(errno));
+
+	// See https://stackoverflow.com/questions/14388706/how-do-so-reuseaddr-and-so-reuseport-differ
+	// For macos docker we need the SO_REUSEPORT, we still include SO_REUSEADDR above to handle some
+	// edge cases of failure to bind (TIME_WAIT state from other sockets stopped for example)
+	optval = 1;
+	result = setsockopt(server, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval));
+	if (result < 0)
+		Warning("-RTMPServer::BindServer() Failed to set SO_REUSEPORT on socket. reason: %s\n", strerror(errno));
 
 	//Bind to first available port
 	sockaddr_in addr;
@@ -88,12 +98,12 @@ int RTMPServer::BindServer()
 	//Bind
 	if (bind(server, (sockaddr*)&addr, sizeof(addr)) < 0)
 		//Error
-		return Error("-RTMPServer::BindServer() Can't bind server socket. errno = %d.\n", errno);
+		return Error("-RTMPServer::BindServer() Can't bind server socket to port %d. reason: %s\n", serverPort, strerror(errno));
 
 	//Listen for connections
 	if (listen(server, 5) < 0)
 		//Error
-		return Error("-RTMPServer::BindServer() Can't listen on server socket. errno = %d\n", errno);
+		return Error("-RTMPServer::BindServer() Can't listen on server socket to port %d. reason: %s\n", serverPort, strerror(errno));
 
 	//OK
 	return 1;
@@ -127,8 +137,13 @@ int RTMPServer::Run()
 		//Wait for events
 		if (poll(ufds,1,-1)<0)
 		{
+			// If this thread happened to wakeup because it handled a signal that was delivered
+			// here then we want to just re-enter the main loop and try again
+			if (errno == EINTR)
+				continue;
+
 			//Error
-			Error("-RTMPServer::Run() pool error [fd:%d,errno:%d]\n",ufds[0].fd,errno);
+			Error("-RTMPServer::Run() poll error [fd:%d,errno:%d]\n",ufds[0].fd,errno);
 			//Check if already inited
 			if (!inited)
 				//Exit
@@ -138,14 +153,13 @@ int RTMPServer::Run()
 				break;
 			//Contintue
 			continue;
-
 		}
 
 		//Chek events, will fail if closed by End() so we can exit
 		if (ufds[0].revents!=POLLIN)
 		{
 			//Error
-			Error("-RTMPServer::Run() poolin error event [event:%d,fd:%d,errno:%d]\n",ufds[0].revents,ufds[0].fd,errno);
+			Error("-RTMPServer::Run() pollin error event [event:%d,fd:%d,errno:%d]\n",ufds[0].revents,ufds[0].fd,errno);
 			//Check if already inited
 			if (!inited)
 				//Exit
@@ -159,6 +173,11 @@ int RTMPServer::Run()
 
 		//Accpept incoming connections
 		int fd = accept(server,NULL,0);
+		while (fd < 0 && errno == EINTR)
+		{
+			UltraDebug("EINTR during accept trying again\n");
+			fd = accept(server,NULL,0);
+		}
 
 		//If error
 		if (fd<0)
@@ -197,9 +216,12 @@ int RTMPServer::Run()
 void RTMPServer::CreateConnection(int fd)
 {
 	//Create new RTMP connection
-	auto rtmp = std::make_shared<RTMPConnection>(this);
+	auto rtmp = std::make_shared<RTMPConnection>();
 
 	Log(">RTMPServer::CreateConnection() connection [fd:%d,%p]\n",fd,rtmp);
+	
+	// Set listener
+	rtmp->SetListener(this);
 
 	//Init connection
 	rtmp->Init(fd);
@@ -228,9 +250,15 @@ void RTMPServer::DeleteAllConnections()
 	ScopedLock lock(mutex);
 
 	//For all connections
+	//For all connections
 	for (auto &connection : connections)
+	{
+		// Clear listener
+		connection->SetListener(nullptr);
+		
 		//Stop it
 		connection->Stop();
+	}
 
 	//Clear all connections
 	connections.clear();
@@ -326,6 +354,8 @@ RTMPNetConnection::shared RTMPServer::OnConnect(const struct sockaddr_in& peerna
 			return it->second->Connect(peername, appName,listener,accept);
 	}
 
+	Log("-RTMPServer::OnConnect() rejecting connection as app not found: %ls\n",appName.c_str());
+
 	//Not found
 	return nullptr;
 }
@@ -334,13 +364,20 @@ RTMPNetConnection::shared RTMPServer::OnConnect(const struct sockaddr_in& peerna
  * OnDisconnect
  *   Event launched from RTMPConnection to indicate that the connection stream has been disconnected
   *************************************/
-void RTMPServer::onDisconnect(const RTMPConnection::shared& con)
+void RTMPServer::onDisconnect(RTMPConnection* con)
 {
 	Log("-RTMPServer::onDisconnect() [%p,socket:%d]\n",con,con->GetSocket());
 
 	//Lock connection list
 	ScopedLock lock(mutex);
 	
-	//Remove from list
-	connections.erase(con);
+	//Find and remove from list
+	auto it = std::find_if(connections.begin(), connections.end(), [con](auto& connection) {
+		return connection.get() == con;
+	});
+	
+	if (it != connections.end())
+	{
+		connections.erase(it);
+	}
 }

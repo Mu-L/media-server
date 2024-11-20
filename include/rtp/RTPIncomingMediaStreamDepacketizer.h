@@ -7,13 +7,20 @@
 #include "rtp/RTPIncomingMediaStream.h"
 #include "RTPDepacketizer.h"
 #include "use.h"
+#include "TimestampChecker.h"
 
 class RTPIncomingMediaStreamDepacketizer :
 	public RTPIncomingMediaStream::Listener,
-	public MediaFrame::Producer
+	public MediaFrame::Producer,
+	public TimeServiceWrapper<RTPIncomingMediaStreamDepacketizer>
 {
-public:
+private:
+	// Private constructor to prevent creating without TimeServiceWrapper::Create() factory
+	friend class TimeServiceWrapper<RTPIncomingMediaStreamDepacketizer>;
 	RTPIncomingMediaStreamDepacketizer(const RTPIncomingMediaStream::shared& incomingSource);
+
+public:
+	
 	virtual ~RTPIncomingMediaStreamDepacketizer();
 	
 	// RTPIncomingMediaStream::Listener interface
@@ -31,7 +38,8 @@ private:
 	std::set<MediaFrame::Listener::shared> listeners;
 	std::unique_ptr<RTPDepacketizer> depacketizer;
 	RTPIncomingMediaStream::shared incomingSource;
-	TimeService &timeService;
+	
+	TimestampChecker tsChecker;
 };
 
 #endif /* STREAMTRACKDEPACKETIZERDEPACKETIZER_H */

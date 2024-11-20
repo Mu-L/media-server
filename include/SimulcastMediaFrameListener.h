@@ -13,13 +13,16 @@
 #include <unordered_map>
 
 class SimulcastMediaFrameListener :
+	public TimeServiceWrapper<SimulcastMediaFrameListener>,
 	public MediaFrame::Listener,
-	public MediaFrame::Producer,
-	public std::enable_shared_from_this<MediaFrame::Listener>
-
+	public MediaFrame::Producer
 {
-public:
+private:
+	// Private constructor to prevent creating without TimeServiceWrapper::Create() factory
+	friend class TimeServiceWrapper<SimulcastMediaFrameListener>;
 	SimulcastMediaFrameListener(TimeService& timeService,DWORD ssrc, DWORD numLayers);
+
+public:
 	virtual ~SimulcastMediaFrameListener();
 
 	void SetNumLayers(DWORD numLayers);
@@ -29,7 +32,7 @@ public:
 	virtual void RemoveMediaListener(const MediaFrame::Listener::shared& listener) override;
 
 	//MediaFrame::Listener interface
-	virtual void onMediaFrame(const MediaFrame& frame) override { onMediaFrame(0, frame); };
+	virtual void onMediaFrame(const MediaFrame& frame) override { onMediaFrame(frame.GetSSRC(), frame); };
 	virtual void onMediaFrame(DWORD ssrc, const MediaFrame& frame) override;
 
 
@@ -39,13 +42,15 @@ public:
 	void Stop();
 
 private:
+	//To be run on timerService thread
+	void PushAsync(std::chrono::milliseconds now, std::shared_ptr<VideoFrame>&& frame);
+
 	void ForwardFrame(VideoFrame& frame);
 
-	void Push(std::unique_ptr<VideoFrame>&& frame);
-	void Enqueue(std::unique_ptr<VideoFrame>&& frame);
+	void Push(std::shared_ptr<VideoFrame>&& frame);
+	void Enqueue(std::shared_ptr<VideoFrame>&& frame);
 	void Flush();
 private:
-	TimeService& timeService;
 	DWORD forwardSsrc = 0;
 	std::unordered_set<MediaFrame::Listener::shared> listeners;
 	std::unordered_set<MediaFrame::Producer::shared> producers;
@@ -63,7 +68,7 @@ private:
 
 	std::unordered_map<uint64_t, int64_t> initialTimestamps;
 	std::unordered_map<uint64_t, size_t> layerDimensions;
-	std::deque<std::unique_ptr<VideoFrame>> queue;
+	std::deque<std::shared_ptr<VideoFrame>> queue;
 
 	// Latest timestamps for each layer
 	std::unordered_map<uint32_t, uint64_t> layerTimestamps;

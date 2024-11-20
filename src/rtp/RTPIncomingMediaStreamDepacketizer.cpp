@@ -2,7 +2,7 @@
 #include "use.h"
 
 RTPIncomingMediaStreamDepacketizer::RTPIncomingMediaStreamDepacketizer(const RTPIncomingMediaStream::shared& incomingSource) :
-	timeService(incomingSource->GetTimeService())
+	TimeServiceWrapper<RTPIncomingMediaStreamDepacketizer>(incomingSource->GetTimeService())
 {
 	Debug("-RTPIncomingMediaStreamDepacketizer::RTPIncomingMediaStreamDepacketizer() [this:%p,incomingSource:%p]\n", this, incomingSource.get());
 	
@@ -40,6 +40,17 @@ void RTPIncomingMediaStreamDepacketizer::onRTP(const RTPIncomingMediaStream* gro
 	 //If we have a new frame
 	 if (frame)
 	 {
+		// Check timestamp
+		auto [status, rts] = tsChecker.Check(frame->GetTime(), frame->GetTimeStamp(), frame->GetClockRate());
+		if (status != TimestampChecker::CheckResult::Valid)
+		{
+			Error("Invalid timestamp. status: %d, info: %s, corrected: %llu offset: %lld \n", 
+				TimestampChecker::CheckResultToString(status), frame->TimeInfoToString().c_str(), rts, tsChecker.GetTimestampOffset());
+		}
+		
+		// Use corrected timestamp
+		frame->SetTimestamp(rts);
+		
 		 //Call all listeners
 		 for (const auto& listener : listeners)
 			 //Call listener
@@ -80,7 +91,7 @@ void RTPIncomingMediaStreamDepacketizer::AddMediaListener(const MediaFrame::List
 		return;
 
 	//Add listener Sync
-	timeService.Async([=](auto now){
+	AsyncSafe([=](auto now){
 		//Add to set
 		listeners.insert(listener);
 	});
@@ -92,7 +103,7 @@ void RTPIncomingMediaStreamDepacketizer::RemoveMediaListener(const MediaFrame::L
 	Debug("-RTPIncomingMediaStreamDepacketizer::RemoveMediaListener() [this:%p,listener:%p]\n", this, listener.get());
 	
 	//Add listener sync so it can be deleted after this call
-	timeService.Sync([=](auto now){
+	Sync([=](auto now){
 		//Check listener
 		if (!listener)
 			//Done
@@ -107,7 +118,7 @@ void RTPIncomingMediaStreamDepacketizer::Stop()
 	//Log
 	Debug("-RTPIncomingMediaStreamDepacketizer::Stop() [this:%p,incomingSource:%p]\n", this, incomingSource.get());
 
-	timeService.Sync([=](auto now){
+	Sync([=](auto now){
 		//If still have a incoming source
 		if (incomingSource)
 		{

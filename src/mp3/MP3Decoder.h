@@ -14,14 +14,15 @@ class MP3Decoder : public AudioDecoder
 public:
 	MP3Decoder();
 	virtual ~MP3Decoder();
-	virtual int Decode(const BYTE *in,int inLen,SWORD* out,int outLen);
+	virtual int Decode(const std::shared_ptr<const AudioFrame>& frame);
+	virtual AudioBuffer::shared GetDecodedAudioFrame();
 	virtual DWORD TrySetRate(DWORD rate)	{ return ctx->sample_rate;		}
 	virtual DWORD GetRate()			{ return ctx->sample_rate;		}
 	virtual DWORD GetNumChannels()		{ return std::min(ctx->channels,2);	}
 	bool SetConfig(const uint8_t* data,const size_t size);
 private:
 	bool		inited	= false;
-	AVCodec*	codec	= nullptr;
+	const AVCodec* codec	= nullptr;
 	AVCodecContext*	ctx	= nullptr;
 	AVPacket*	packet	= nullptr;
 	AVFrame*	frame	= nullptr;

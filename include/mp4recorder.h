@@ -41,6 +41,7 @@ private:
 	bool hasSPS		= false;
 	bool hasPPS		= false;
 	bool hasDimensions	= false;
+	bool hasConfigObu	= false;
 	uint64_t firstSenderTime= 0;
 	uint64_t firstTimestamp = 0;
 	uint64_t lastSenderTime = 0;
@@ -84,7 +85,7 @@ public:
 private:
 	void processMediaFrame(DWORD ssrc, const MediaFrame &frame, QWORD time);
 private:	
-	typedef std::map<DWORD,mp4track*>	Tracks;
+	typedef std::unordered_map<DWORD, std::unique_ptr<mp4track>>	Tracks;
 private:
 	EventLoop	loop;
 	Listener*	listener	= nullptr;

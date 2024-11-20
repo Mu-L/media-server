@@ -3,11 +3,13 @@
 #include <unistd.h>
 #include <string.h>
 #include "log.h"
+#include "tools.h"
 #include "codecs.h"
 #include "rtp.h"
 #include "mp4streamer.h"
 #include "video.h"
 #include "audio.h"
+
 
 
 MP4Streamer::MP4Streamer(Listener *listener)
@@ -22,14 +24,6 @@ MP4Streamer::~MP4Streamer()
 	if (opened)
 		//Close us
 		Close();
-	
-	//Check tracks and delete
-	if (audio)
-		delete (audio);
-	if (video)
-		delete (video);
-	if (text)
-		delete (text);
 }
 
 int MP4Streamer::Open(const char *filename)
@@ -97,13 +91,13 @@ int MP4Streamer::Open(const char *filename)
 				// Depending on the name
 				if (strcmp("PCMU", name) == 0)
 					//Create new audio track
-					audio = new MP4RtpTrack(MediaFrame::Audio,AudioCodec::PCMU,payload,8000);
+					audio = std::make_unique<MP4RtpTrack>(MediaFrame::Audio,AudioCodec::PCMU,payload,8000);
 				else if (strcmp("PCMA", name) == 0)
 					//Create new audio track
-					audio = new MP4RtpTrack(MediaFrame::Audio,AudioCodec::PCMA,payload,8000);
+					audio = std::make_unique<MP4RtpTrack>(MediaFrame::Audio,AudioCodec::PCMA,payload,8000);
 				else if (strcmp("OPUS", name) == 0)
 					//Create new audio track
-					audio = new MP4RtpTrack(MediaFrame::Audio,AudioCodec::OPUS,payload,48000);
+					audio = std::make_unique<MP4RtpTrack>(MediaFrame::Audio,AudioCodec::OPUS,payload,48000);
 				else
 					//Skip
 					continue;
@@ -127,13 +121,13 @@ int MP4Streamer::Open(const char *filename)
 
 				if (strcmp("H264", name) == 0)
 					//Create new video track
-					video = new MP4RtpTrack(MediaFrame::Video,VideoCodec::H264,payload,90000);
+					video = std::make_unique<MP4RtpTrack>(MediaFrame::Video,VideoCodec::H264,payload,90000);
 				else if (strcmp("VP8", name) == 0)
 					//Create new video track
-					video = new MP4RtpTrack(MediaFrame::Video,VideoCodec::VP8,payload,90000);
+					video = std::make_unique<MP4RtpTrack>(MediaFrame::Video,VideoCodec::VP8,payload,90000);
 				else if (strcmp("VP9", name) == 0)
 					//Create new video track
-					video = new MP4RtpTrack(MediaFrame::Video,VideoCodec::VP9,payload,90000);
+					video = std::make_unique<MP4RtpTrack>(MediaFrame::Video,VideoCodec::VP9,payload,90000);
 				else
 					continue;
 					
@@ -157,7 +151,7 @@ int MP4Streamer::Open(const char *filename)
 	{
 		Log("-MP4Streamer::Open() | Found text track [%d]\n",textId);
 		//We have it
-		text = new MP4TextTrack();
+		text = std::make_unique<MP4TextTrack>();
 		//Set values
 		text->mp4 = mp4;
 		text->track = textId;
@@ -191,7 +185,7 @@ int MP4Streamer::Play()
 	seeked = 0;
 	
 	//Start event loop
-	loop.Start([this](){PlayLoop();});
+	loop.StartWithLoop([this](){PlayLoop();});
 
 	Log("<MP4Streamer:Play()\n");
 
@@ -279,7 +273,7 @@ int MP4Streamer::PlayLoop()
 		}
 
 		// Wait time diff
-		QWORD now = getTimeDiff(ini)/1000;
+		QWORD now = playbackSpeed * getTimeDiff(ini)/1000;
 
 		if (t>now)
 		{
@@ -354,7 +348,7 @@ int MP4Streamer::Seek(QWORD time)
 	seeked = time;
 
 	//Start event loop
-	loop.Start([this](){PlayLoop();});
+	loop.StartWithLoop([this](){PlayLoop();});
 
 	Log("<MP4Streamer:Seek() | seeked [%lld,%lld]\n",time,seeked);
 
@@ -584,7 +578,7 @@ QWORD MP4RtpTrack::Read(Listener *listener)
 		// Get size of sample
 		frameSize = MP4GetSampleSize(mp4, track, sampleId);
 		// extend buffer for frame size
-		if (frame->GetMaxMediaLength() < frameSize)
+		if (frame->GetMaxMediaLength() < uint32_t(frameSize))
 		{
 			frame->Alloc(frameSize);
 		}
@@ -913,7 +907,7 @@ double MP4Streamer::GetVideoFramerate()
 	return MP4GetTrackVideoFrameRate(video->mp4,video->track);
 }
 
-AVCDescriptor* MP4Streamer::GetAVCDescriptor()
+std::unique_ptr<AVCDescriptor> MP4Streamer::GetAVCDescriptor()
 {
 	uint8_t **sequenceHeader;
 	uint8_t **pictureHeader;
@@ -931,7 +925,7 @@ AVCDescriptor* MP4Streamer::GetAVCDescriptor()
 		return NULL;
 
 	//Create descriptor
-	AVCDescriptor* desc = new AVCDescriptor();
+	std::unique_ptr<AVCDescriptor> desc = std::make_unique<AVCDescriptor>();
 
 	//Set default
 	desc->SetConfigurationVersion(0x01);

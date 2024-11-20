@@ -122,8 +122,8 @@ int DTLSConnection::GenerateCertificate()
 		goto error;
 	}
 	
-	X509_NAME_add_entry_by_txt(cert_name, "O", MBSTRING_ASC, (BYTE*)"Medooze Media Server", -1, -1, 0);
-	X509_NAME_add_entry_by_txt(cert_name, "CN", MBSTRING_ASC, (BYTE*)"Medooze Media Server", -1, -1, 0);
+	X509_NAME_add_entry_by_txt(cert_name, "O", MBSTRING_ASC, (BYTE*)"medooze", -1, -1, 0);
+	X509_NAME_add_entry_by_txt(cert_name, "CN", MBSTRING_ASC, (BYTE*)"medooze", -1, -1, 0);
 
 	// It is self-signed so set the issuer name to be the same as the subject.
 	ret = X509_set_issuer_name(certificate, cert_name);
@@ -371,8 +371,8 @@ std::string DTLSConnection::GetCertificateFingerPrint(Hash hash)
 
 
 DTLSConnection::DTLSConnection(Listener& listener,TimeService& timeService,datachannels::Transport& sctp) :
+	TimeServiceWrapper<DTLSConnection>(timeService),
 	listener(listener),
-	timeService(timeService),
 	sctp(sctp),
 	inited(false)
 {
@@ -433,9 +433,9 @@ int DTLSConnection::Init()
 	BIO_set_mem_eof_return(write_bio, -1);
 
 	//Set MTU of datagrams so it fits in an UDP packet
-	SSL_set_mtu(ssl, RTPPAYLOADSIZE);
+	SSL_set_mtu(ssl, UDPPAYLOADSIZE);
 	//DTLS_set_link_mtu(ssl, MTU);
-	BIO_ctrl(write_bio, BIO_CTRL_DGRAM_SET_MTU, RTPPAYLOADSIZE, NULL);
+	BIO_ctrl(write_bio, BIO_CTRL_DGRAM_SET_MTU, UDPPAYLOADSIZE, NULL);
 
 	SSL_set_bio(ssl, read_bio, write_bio);
 
@@ -462,7 +462,7 @@ int DTLSConnection::Init()
 	SSL_do_handshake(ssl);
 	
 	//Start timeout
-	timeout = timeService.CreateTimer(0ms, [this](auto now){
+	timeout = CreateTimerSafe(0ms, [this](auto now){
 		//UltraDebug("-DTLSConnection::Timeout()\n");
 		//Check if still inited
 		if (inited)
@@ -559,7 +559,7 @@ void DTLSConnection::Reset()
 		return;
 		
 	//Run in event loop thread
-	timeService.Sync([this](auto now){
+	Sync([this](auto now){
 		//Send shutdown
 		Shutdown();
 	});
@@ -713,7 +713,7 @@ int DTLSConnection::Renegotiate()
 {
 	TRACE_EVENT("dtls", "DTLSConnection::Renegotiate");
 	//Run in event loop thread
-	timeService.Async([this](auto now){
+	AsyncSafe([this](auto now){
 		if (ssl)
 		{
 

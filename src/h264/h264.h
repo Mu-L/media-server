@@ -1,112 +1,515 @@
-/* 
- * File:   h264.h
- * Author: Sergio
- *
- * Created on 18 de julio de 2012, 17:12
- */
-
 #ifndef H264_H
 #define	H264_H
 #include "config.h"
 #include "math.h"
-#include "bitstream.h"
 #include "H26xNal.h"
 
-#define CHECK(r) if(r.Error()) return false;
+// Constants for VUI parsing
+static constexpr uint8_t ExtendedSar = 255;
+static const uint8_t H264PixelAspect[17][2] = {
+{   0,  1 },
+{   1,  1 },
+{  12, 11 },
+{  10, 11 },
+{  16, 11 },
+{  40, 33 },
+{  24, 11 },
+{  20, 11 },
+{  32, 11 },
+{  80, 33 },
+{  18, 11 },
+{  15, 11 },
+{  64, 33 },
+{ 160, 99 },
+{   4,  3 },
+{   3,  2 },
+{   2,  1 }
+};
+static constexpr uint8_t  ChromaSampleLocTypeTopFieldMin = 0;
+static constexpr uint8_t  ChromaSampleLocTypeTopFieldMax = 5;
+static constexpr uint8_t  ChromaSampleLocTypeBottomFieldMin = 0;
+static constexpr uint8_t  ChromaSampleLocTypeBottomFieldMax = 5;
+static constexpr uint8_t  CpbCntMinusOneMin = 0;
+static constexpr uint8_t  CpbCntMinusOneMax = 31;
+static constexpr uint8_t  MaxBitsPerMbDenomMin = 0;
+static constexpr uint8_t  MaxBitsPerMbDenomMax = 16;
+static constexpr uint8_t  MaxBytesPerPicDenomMin = 0;
+static constexpr uint8_t  MaxBytesPerPicDenomMax = 16;
+static constexpr uint8_t  Log2MaxMvLengthHorizontalMin = 0;
+static constexpr uint8_t  Log2MaxMvLengthHorizontalMax = 16;
+static constexpr uint8_t  Log2MaxMvLengthVerticalMin = 0;
+static constexpr uint8_t  Log2MaxMvLengthVerticalMax = 16;
+static constexpr uint8_t  MaxDpbFrames = 16; // Lifted from FFMPEG
+
+enum class AvcNaluType {
+	Unspecified	= 0,
+	Slice		= 1,
+	Dpa		= 2,
+	Dpb		= 3,
+	Dpc		= 4,
+	IdrSlice	= 5,
+	Sei		= 6,
+	Sps		= 7,
+	Pps		= 8,
+	Aud		= 9,
+	EndSequence	= 10,
+	EndStream	= 11,
+	FillerData	= 12,
+	SpsExt		= 13,
+	Prefix		= 14,
+	SubSps		= 15,
+	Dps		= 16,
+	Reserved17	= 17,
+	Reserved18	= 18,
+	AuxiliarySlice 	= 19,
+	ExtenSlice	= 20,
+	DepthExtenSlice = 21,
+	Reserved22	= 22,
+	Reserved23	= 23,
+	Unspecified24	= 24,
+	Unspecified25	= 25,
+	Unspecified26	= 26,
+	Unspecified27	= 27,
+	Unspecified28	= 28,
+	Unspecified29	= 29,
+	Unspecified30	= 30,
+	Unspecified31	= 31,
+};
 
 class H264SeqParameterSet
 {
 public:
+	struct HrdParameters
+	{
+		uint32_t              cpb_cnt_minus1 = 0;
+		uint32_t              bit_rate_scale = 0;
+		uint32_t              cpb_size_scale = 0;
+		std::vector<uint32_t> bit_rate_value_minus1;
+		std::vector<uint32_t> cpb_size_value_minus1;
+		std::vector<uint32_t> cbr_flag;
+		uint32_t              initial_cpb_removal_delay_length_minus1 = 0;
+		uint32_t              cpb_removal_delay_length_minus1 = 0;
+		uint32_t              dpb_output_delay_length_minus1 = 0;
+		uint32_t              time_offset_length = 0;
+		bool Decode(RbspBitReader &r)
+		{
+			cpb_cnt_minus1 = r.GetExpGolomb();
+			if (cpb_cnt_minus1 < CpbCntMinusOneMin ||
+				cpb_cnt_minus1 > CpbCntMinusOneMax)
+			{
+				Warning("-H264SeqParameterSet::ParseHRDParameters() Invalid cpb_cnt_minus1 %u. Not in Range [%u, %u]\n", 
+							cpb_cnt_minus1, CpbCntMinusOneMin, CpbCntMinusOneMax);
+				return false;
+			}
+			bit_rate_scale = r.Get(4);
+			cpb_size_scale = r.Get(4);
+			for (uint32_t SchedSelIdx = 0; SchedSelIdx <= cpb_cnt_minus1; SchedSelIdx++)
+			{
+				bit_rate_value_minus1.push_back(r.GetExpGolomb());
+				cpb_size_value_minus1.push_back(r.GetExpGolomb());
+				cbr_flag.push_back(r.Get(1));
+			}
+			initial_cpb_removal_delay_length_minus1 = r.Get(5);
+			cpb_removal_delay_length_minus1 = r.Get(5);
+			dpb_output_delay_length_minus1 = r.Get(5);
+			time_offset_length = r.Get(5);
+			return true;
+		}
+		void Dump() const 
+		{
+			Debug("\t\t\tcpb_cnt_minus1=%u\n",	cpb_cnt_minus1);
+			Debug("\t\t\tbit_rate_scale=%u\n",	bit_rate_scale);
+			Debug("\t\t\tcpb_size_scale=%u\n",	cpb_size_scale);
+			for (uint32_t SchedSelIdx = 0; SchedSelIdx <= cpb_cnt_minus1; SchedSelIdx++)
+			{
+				Debug("\t\t\tbit_rate_value_minus1[%u]=%u\n",	SchedSelIdx, cpb_size_scale);
+				Debug("\t\t\tcpb_size_value_minus1[%u]=%u\n",	SchedSelIdx, cpb_size_value_minus1);
+				Debug("\t\t\tcbr_flag[%u]=%u\n",	SchedSelIdx, cbr_flag);
+			}
+			Debug("\t\t\tinitial_cpb_removal_delay_length_minus1=%u\n",	initial_cpb_removal_delay_length_minus1);
+			Debug("\t\t\tcpb_removal_delay_length_minus1=%u\n",	cpb_removal_delay_length_minus1);
+			Debug("\t\t\tdpb_output_delay_length_minus1=%u\n",	dpb_output_delay_length_minus1);
+			Debug("\t\t\ttime_offset_length=%u\n",	time_offset_length);
+		}
+	};
+
+	struct VuiParameters
+	{
+		uint32_t      aspect_ratio_info_present_flag;
+		uint32_t      aspect_ratio_idc;
+		std::optional<uint32_t>      sar_width = {};
+		std::optional<uint32_t>      sar_height = {};
+		uint32_t      overscan_info_present_flag = 0;
+		uint32_t      overscan_appropriate_flag = 0;
+		uint32_t  	  video_signal_type_present_flag = 0;
+		uint32_t 	  video_format = 0;
+		uint32_t 	  video_full_range_flag = 0;
+		uint32_t  	  colour_description_present_flag = 0;
+		uint32_t 	  colour_primaries = 0;
+		uint32_t 	  transfer_characteristics = 0;
+		uint32_t 	  matrix_coefficients = 0;
+		uint32_t 	  chroma_loc_info_present_flag = 0;
+		uint32_t 	  chroma_sample_loc_type_top_field = 0;
+		uint32_t	  chroma_sample_loc_type_bottom_field = 0;
+		uint32_t 	  timing_info_present_flag = 0;
+		uint32_t 	  num_units_in_tick = 0;
+		uint32_t 	  time_scale = 0;
+		uint32_t 	  fixed_frame_rate_flag = 0;
+		std::optional<HrdParameters> nal_hrd_parameters;
+		std::optional<HrdParameters> vcl_hrd_parameters;
+		uint32_t      low_delay_hrd_flag = 0;
+		uint32_t 	  pic_struct_present_flag = 0;
+		uint32_t 	  bitstream_restriction_flag = 0;
+		uint32_t 	  motion_vectors_over_pic_boundaries_flag = 0;
+		uint32_t 	  max_bytes_per_pic_denom = 0;
+		uint32_t 	  max_bits_per_mb_denom = 0;
+		uint32_t 	  log2_max_mv_length_horizontal = 0;
+		uint32_t 	  log2_max_mv_length_vertical = 0;
+		uint32_t 	  max_num_reorder_frames = 0;
+		uint32_t 	  max_dec_frame_buffering = 0;
+		bool Decode(RbspBitReader &r)
+		{
+			aspect_ratio_info_present_flag = r.Get(1);
+			if (aspect_ratio_info_present_flag) 
+			{
+				aspect_ratio_idc = r.Get(8);
+				if (aspect_ratio_idc == ExtendedSar) 
+				{
+					sar_width = r.Get(16);
+					sar_height = r.Get(16);
+				} 
+				else if (aspect_ratio_idc < (sizeof(H264PixelAspect) / sizeof((H264PixelAspect)[0])))
+				{
+					sar_width = H264PixelAspect[aspect_ratio_idc][0];
+					sar_height = H264PixelAspect[aspect_ratio_idc][1];
+				} 
+				else 
+				{
+					Warning("-H264SeqParameterSet::DecodeVuiParameters() Illegal aspect ratio\n");
+					return false;
+				}
+			} 
+
+			overscan_info_present_flag = r.Get(1);
+			if (overscan_info_present_flag)
+				overscan_appropriate_flag = r.Get(1);
+			
+			video_signal_type_present_flag = r.Get(1);
+			if (video_signal_type_present_flag)
+			{
+				// video_format  u(3)
+				video_format = r.Get(3);
+				// video_full_range_flag  u(1)
+				video_full_range_flag = r.Get(1);
+				// colour_description_present_flag  u(1)
+				colour_description_present_flag = r.Get(1);
+				if (colour_description_present_flag) 
+				{
+					// colour_primaries  u(8)
+					colour_primaries = r.Get(8);
+					// transfer_characteristics  u(8)
+					transfer_characteristics = r.Get(8);
+					// matrix_coefficients  u(8)
+					matrix_coefficients = r.Get(8);
+				}
+			}
+
+			// chroma_loc_info_present_flag  u(1)
+			chroma_loc_info_present_flag = r.Get(1);
+			if (chroma_loc_info_present_flag) 
+			{
+				// chroma_sample_loc_type_top_field  ue(v)
+				chroma_sample_loc_type_top_field = r.GetExpGolomb();
+
+				if (chroma_sample_loc_type_top_field < ChromaSampleLocTypeTopFieldMin ||
+					chroma_sample_loc_type_top_field > ChromaSampleLocTypeTopFieldMax) 
+				{
+					Warning("-H264SeqParameterSet::DecodeVuiParameters() Invalid chroma sample_loc_type_top_field %u. Not in Range [%u, %u]\n", 
+							chroma_sample_loc_type_top_field, ChromaSampleLocTypeTopFieldMin, ChromaSampleLocTypeTopFieldMax);
+					return false;
+				}
+
+				// chroma_sample_loc_type_bottom_field  ue(v)
+				chroma_sample_loc_type_bottom_field = r.GetExpGolomb();
+				if (chroma_sample_loc_type_bottom_field < ChromaSampleLocTypeBottomFieldMin ||
+					chroma_sample_loc_type_bottom_field > ChromaSampleLocTypeBottomFieldMax) 
+				{
+					Warning("-H264SeqParameterSet::DecodeVuiParameters() Invalid chroma sample_loc_type_bottom_field %u. Not in Range [%u, %u]\n", 
+							chroma_sample_loc_type_bottom_field, ChromaSampleLocTypeBottomFieldMin, ChromaSampleLocTypeBottomFieldMax);
+					return false;
+				}
+			}
+
+			// timing_info_present_flag  u(1)
+			timing_info_present_flag = r.Get(1);
+			if (timing_info_present_flag) 
+			{
+				// num_units_in_tick  u(32)
+				num_units_in_tick = r.Get(32);
+				// time_scale  u(32)
+				time_scale = r.Get(32);
+				// fixed_frame_rate_flag  u(1)
+				fixed_frame_rate_flag = r.Get(1);
+			}
+
+			// nal_hrd_parameters_present_flag  u(1)
+			bool nal_hrd_parameters_present_flag = r.Get(1);
+			if (nal_hrd_parameters_present_flag) 
+			{
+				// nal hrd_parameters()
+				HrdParameters hrd;
+				if (!hrd.Decode(r))
+					return false;
+				this->nal_hrd_parameters = hrd;
+			}
+
+			// vcl_hrd_parameters_present_flag  u(1)
+			bool vcl_hrd_parameters_present_flag = r.Get(1);
+			if (vcl_hrd_parameters_present_flag) 
+			{
+				HrdParameters hrd;
+				// vcl hrd_parameters()
+				if (!hrd.Decode(r))
+					return false;
+				this->vcl_hrd_parameters = hrd;
+			}
+
+			if (nal_hrd_parameters_present_flag || vcl_hrd_parameters_present_flag)
+			{
+				low_delay_hrd_flag = r.Get(1);
+			}
+
+			pic_struct_present_flag = r.Get(1);
+			bitstream_restriction_flag = r.Get(1);
+
+			if (bitstream_restriction_flag)
+			{
+				motion_vectors_over_pic_boundaries_flag = r.Get(1);
+
+				max_bytes_per_pic_denom = r.GetExpGolomb();
+				if (max_bytes_per_pic_denom < MaxBytesPerPicDenomMin ||
+					max_bytes_per_pic_denom > MaxBytesPerPicDenomMax) 
+				{
+					Warning("-H264SeqParameterSet::DecodeVuiParameters() Invalid max_bytes_per_pic_denom %u. Not in Range [%u, %u]\n", 
+							max_bytes_per_pic_denom, MaxBytesPerPicDenomMin, MaxBytesPerPicDenomMax);
+					return false;
+				}
+
+				max_bits_per_mb_denom = r.GetExpGolomb();
+				if (max_bits_per_mb_denom < MaxBitsPerMbDenomMin ||
+					max_bits_per_mb_denom > MaxBitsPerMbDenomMax) 
+				{
+					Warning("-H264SeqParameterSet::DecodeVuiParameters() Invalid max_bits_per_mb_denom %u. Not in Range [%u, %u]\n", 
+							max_bits_per_mb_denom, MaxBitsPerMbDenomMin, MaxBitsPerMbDenomMax);
+					return false;
+				}
+
+				log2_max_mv_length_horizontal = r.GetExpGolomb();
+				if (log2_max_mv_length_horizontal < Log2MaxMvLengthHorizontalMin ||
+					log2_max_mv_length_horizontal > Log2MaxMvLengthHorizontalMax) 
+				{
+					Warning("-H264SeqParameterSet::DecodeVuiParameters() Invalid log2_max_mv_length_horizontal %u. Not in Range [%u, %u]\n", 
+							log2_max_mv_length_horizontal, Log2MaxMvLengthHorizontalMin, Log2MaxMvLengthHorizontalMax);
+					return false;
+				}
+
+				log2_max_mv_length_vertical = r.GetExpGolomb();
+				if (log2_max_mv_length_vertical < Log2MaxMvLengthVerticalMin ||
+					log2_max_mv_length_vertical > Log2MaxMvLengthVerticalMax) 
+				{
+					Warning("-H264SeqParameterSet::DecodeVuiParameters() Invalid log2_max_mv_length_vertical %u. Not in Range [%u, %u]\n", 
+							log2_max_mv_length_vertical, Log2MaxMvLengthVerticalMin, Log2MaxMvLengthVerticalMax);
+					return false;
+				}
+
+				max_num_reorder_frames = r.GetExpGolomb();
+				if (max_num_reorder_frames > MaxDpbFrames)
+				{
+					Warning("-H264SeqParameterSet::DecodeVuiParameters() Invalid max_num_reorder_frames %u. Not in Range [%u, %u]\n", 
+							max_num_reorder_frames, 0, MaxDpbFrames);
+					return false;
+				}
+
+				max_dec_frame_buffering = r.GetExpGolomb();
+				if (max_dec_frame_buffering > MaxDpbFrames)
+				{
+					Warning("-H264SeqParameterSet::DecodeVuiParameters() Invalid max_dec_frame_buffering %u. Not in Range [%u, %u]\n", 
+							max_dec_frame_buffering, 0, MaxDpbFrames);
+					return false;
+				}
+			}
+			
+			return true;
+			
+		}
+		void Dump() const
+		{
+			Debug("\t[H264SeqParameterSet VUI params\n");
+			Debug("\t\taspect_ratio_info_present_flag=%u\n", aspect_ratio_info_present_flag);
+			Debug("\t\taspect_ratio_idc=%u\n", aspect_ratio_idc);
+			if (sar_width)
+				Debug("\t\tsar_width=%u\n", sar_width.value());
+			if (sar_height)
+				Debug("\t\tsar_height=%u\n", sar_height.value());
+			Debug("\t\toverscan_info_present_flag=%u\n", overscan_info_present_flag);
+			Debug("\t\toverscan_appropriate_flag=%u\n", overscan_appropriate_flag);
+			Debug("\t\tvideo_signal_type_present_flag=%u\n", video_signal_type_present_flag);
+			Debug("\t\tvideo_format=%u\n", video_format);
+			Debug("\t\tvideo_full_range_flag=%u\n", video_full_range_flag);
+			Debug("\t\tcolour_description_present_flag=%u\n", colour_description_present_flag);
+			Debug("\t\tcolour_primaries=%u\n", colour_primaries);
+			Debug("\t\ttransfer_characteristics=%u\n", transfer_characteristics);
+			Debug("\t\tmatrix_coefficients=%u\n", matrix_coefficients);
+			Debug("\t\tchroma_loc_info_present_flag=%u\n", chroma_loc_info_present_flag);
+			Debug("\t\tchroma_sample_loc_type_top_field=%u\n", chroma_sample_loc_type_top_field);
+			Debug("\t\tchroma_sample_loc_type_bottom_field=%u\n", chroma_sample_loc_type_bottom_field);
+			Debug("\t\ttiming_info_present_flag=%u\n", timing_info_present_flag);
+			Debug("\t\tnum_units_in_tick=%u\n", num_units_in_tick);
+			Debug("\t\ttime_scale=%u\n", time_scale);
+			Debug("\t\tfixed_frame_rate_flag=%u\n", fixed_frame_rate_flag);
+			if (nal_hrd_parameters)
+			{
+				Debug("\t\t[H264SeqParameterSet VUI params : NAL HRD params\n");
+				nal_hrd_parameters->Dump();
+			}
+			if (vcl_hrd_parameters)
+			{
+				Debug("\t\t[H264SeqParameterSet VUI params : VCL HRD params\n");
+				vcl_hrd_parameters->Dump();
+			}
+			Debug("\t\tlow_delay_hrd_flag=%u\n", low_delay_hrd_flag);
+			Debug("\t\tpic_struct_present_flag=%u\n", pic_struct_present_flag);
+			Debug("\t\tbitstream_restriction_flag=%u\n", bitstream_restriction_flag);
+			if (bitstream_restriction_flag)
+			{
+				Debug("\t\tmotion_vectors_over_pic_boundaries_flag=%u\n", motion_vectors_over_pic_boundaries_flag);
+				Debug("\t\tmax_bytes_per_pic_denom=%u\n", max_bytes_per_pic_denom);
+				Debug("\t\tmax_bits_per_mb_denom=%u\n", max_bits_per_mb_denom);
+				Debug("\t\tlog2_max_mv_length_horizontal=%u\n", log2_max_mv_length_horizontal);
+				Debug("\t\tlog2_max_mv_length_vertical=%u\n", log2_max_mv_length_vertical);
+				Debug("\t\tmax_num_reorder_frames=%u\n", max_num_reorder_frames);
+				Debug("\t\tmax_dec_frame_buffering=%u\n", max_dec_frame_buffering);
+			}
+		}
+	};
+
 	bool Decode(const BYTE* buffer,DWORD bufferSize)
 	{
-		//SHould be done otherway, like modifying the BitReader to escape the input NAL, but anyway.. duplicate memory
-		BYTE *aux = (BYTE*)malloc(bufferSize);
-		//Escape
-		DWORD len = NalUnescapeRbsp(aux,buffer,bufferSize);
-		//Create bit reader
-		BitReader r(aux,len);
-		//Read SPS
-		CHECK(r); profile_idc = r.Get(8);
-		CHECK(r); constraint_set0_flag = r.Get(1);
-		CHECK(r); constraint_set1_flag = r.Get(1);
-		CHECK(r); constraint_set2_flag = r.Get(1);
-		CHECK(r); reserved_zero_5bits  = r.Get(5);
-		CHECK(r); level_idc = r.Get(8);
-		CHECK(r); seq_parameter_set_id = ExpGolombDecoder::Decode(r);
+		RbspReader reader(buffer, bufferSize);
+		RbspBitReader r(reader);
+
+		try {
+			//Read SPS
+			profile_idc = r.Get(8);
+			constraint_set0_flag = r.Get(1);
+			constraint_set1_flag = r.Get(1);
+			constraint_set2_flag = r.Get(1);
+			reserved_zero_5bits  = r.Get(5);
+			level_idc = r.Get(8);
+			seq_parameter_set_id = r.GetExpGolomb();
 		
-		//Check profile
-		if(profile_idc==100 || profile_idc==110 || profile_idc==122 || profile_idc==244 || profile_idc==44 || 
-			profile_idc==83 || profile_idc==86 || profile_idc==118 || profile_idc==128 || profile_idc==138 || profile_idc==139 || 
-			profile_idc==134 || profile_idc==135)
-		{
-			CHECK(r); [[maybe_unused]] auto chroma_format_idc = ExpGolombDecoder::Decode(r);
-			if( chroma_format_idc == 3 )
+			//Check profile
+			if(profile_idc==100 || profile_idc==110 || profile_idc==122 || profile_idc==244 || profile_idc==44 || 
+				profile_idc==83 || profile_idc==86 || profile_idc==118 || profile_idc==128 || profile_idc==138 || 
+				profile_idc==139 || profile_idc==134 || profile_idc==135)
 			{
-				CHECK(r); [[maybe_unused]] auto separate_colour_plane_flag = r.Get(1);
-			}
-			CHECK(r); [[maybe_unused]] auto bit_depth_luma_minus8 = ExpGolombDecoder::Decode(r);
-			CHECK(r); [[maybe_unused]] auto bit_depth_chroma_minus8 = ExpGolombDecoder::Decode(r);
-			CHECK(r); [[maybe_unused]] auto qpprime_y_zero_transform_bypass_flag = r.Get(1);
-			CHECK(r); [[maybe_unused]] auto seq_scaling_matrix_present_flag = r.Get(1);
-			if( seq_scaling_matrix_present_flag )
-			{	
-				for(uint32_t i = 0; i < (( chroma_format_idc != 3 ) ? 8 : 12 ); i++ )
+				chroma_format_idc = r.GetExpGolomb();
+
+				if( chroma_format_idc == 3 )
 				{
-					CHECK(r); auto seq_scaling_list_present_flag = r.Get(1);
-					if( seq_scaling_list_present_flag)
+					separate_colour_plane_flag = r.Get(1);
+				}
+
+				[[maybe_unused]] auto bit_depth_luma_minus8			= r.GetExpGolomb();
+				[[maybe_unused]] auto bit_depth_chroma_minus8			= r.GetExpGolomb();
+				[[maybe_unused]] auto qpprime_y_zero_transform_bypass_flag	= r.Get(1);
+				[[maybe_unused]] auto seq_scaling_matrix_present_flag		= r.Get(1);
+
+				if( seq_scaling_matrix_present_flag )
+				{	
+					for(uint32_t i = 0; i < (( chroma_format_idc != 3 ) ? 8 : 12 ); i++ )
 					{
-						//Not supported
-						return false;
-//						if( i < 6 )
-//							scaling_list( ScalingList4x4[ i ], 16, UseDefaultScalingMatrix4x4Flag[ i ] )
-//						else
-//							scaling_list( ScalingList8x8[ i − 6 ], 64, UseDefaultScalingMatrix8x8Flag[ i − 6 ] )
+						auto seq_scaling_list_present_flag = r.Get(1);
+						if( seq_scaling_list_present_flag)
+						{
+							//Not supported
+							return false;
+	//						if( i < 6 )
+	//							scaling_list( ScalingList4x4[ i ], 16, UseDefaultScalingMatrix4x4Flag[ i ] )
+	//						else
+	//							scaling_list( ScalingList8x8[ i − 6 ], 64, UseDefaultScalingMatrix8x8Flag[ i − 6 ] )
+						}
 					}
 				}
 			}
-		}
-		CHECK(r); log2_max_frame_num_minus4 = ExpGolombDecoder::Decode(r);
-		pic_order_cnt_type = ExpGolombDecoder::Decode(r);
-		if( pic_order_cnt_type == 0 )
-		{
-			CHECK(r); log2_max_pic_order_cnt_lsb_minus4 = ExpGolombDecoder::Decode(r);
-		} else if( pic_order_cnt_type == 1 ) {
-			CHECK(r); delta_pic_order_always_zero_flag = r.Get(1);
-			CHECK(r); offset_for_non_ref_pic = ExpGolombDecoder::Decode(r); 
-			CHECK(r); offset_for_top_to_bottom_field = ExpGolombDecoder::Decode(r); 
-			CHECK(r); num_ref_frames_in_pic_order_cnt_cycle = ExpGolombDecoder::Decode(r);
-			for( DWORD i = 0; i < num_ref_frames_in_pic_order_cnt_cycle; i++ )
+
+			log2_max_frame_num_minus4	= r.GetExpGolomb();
+			pic_order_cnt_type		= r.GetExpGolomb();
+
+			if( pic_order_cnt_type == 0 )
 			{
-				CHECK(r); offset_for_ref_frame.assign(i,ExpGolombDecoder::Decode(r));
+				log2_max_pic_order_cnt_lsb_minus4 = r.GetExpGolomb();
+			} else if( pic_order_cnt_type == 1 ) {
+				delta_pic_order_always_zero_flag	= r.Get(1);
+				offset_for_non_ref_pic			= r.GetExpGolomb(); 
+				offset_for_top_to_bottom_field		= r.GetExpGolomb(); 
+				num_ref_frames_in_pic_order_cnt_cycle	= r.GetExpGolomb();
+
+				for( DWORD i = 0; i < num_ref_frames_in_pic_order_cnt_cycle; i++ )
+				{
+					offset_for_ref_frame.assign(i,r.GetExpGolomb());
+				}
+			}
+
+			num_ref_frames				= r.GetExpGolomb();
+
+			gaps_in_frame_num_value_allowed_flag	= r.Get(1);
+			pic_width_in_mbs_minus1			= r.GetExpGolomb();
+			pic_height_in_map_units_minus1		= r.GetExpGolomb();
+			frame_mbs_only_flag			= r.Get(1);
+
+			if (!frame_mbs_only_flag)
+			{
+				mb_adaptive_frame_field_flag	= r.Get(1);
+			}
+
+			direct_8x8_inference_flag		= r.Get(1);
+			frame_cropping_flag	= r.Get(1);
+			
+			if (frame_cropping_flag)
+			{
+				frame_crop_left_offset		= r.GetExpGolomb();
+				frame_crop_right_offset		= r.GetExpGolomb();
+				frame_crop_top_offset		= r.GetExpGolomb();
+				frame_crop_bottom_offset	= r.GetExpGolomb();
+			}
+
+			bool vui_parameters_present_flag = r.Get(1);
+			if (vui_parameters_present_flag) 
+			{
+				VuiParameters vuiParams;
+				if (!vuiParams.Decode(r))
+					return false;
+				this->vuiParams = vuiParams;
 			}
 		}
-		CHECK(r); num_ref_frames = ExpGolombDecoder::Decode(r);
-		CHECK(r); gaps_in_frame_num_value_allowed_flag = r.Get(1);
-		CHECK(r); pic_width_in_mbs_minus1 = ExpGolombDecoder::Decode(r);
-		CHECK(r); pic_height_in_map_units_minus1 = ExpGolombDecoder::Decode(r);
-		CHECK(r); frame_mbs_only_flag = r.Get(1);
-		if (!frame_mbs_only_flag)
+		catch (std::exception &e) 
 		{
-			CHECK(r); mb_adaptive_frame_field_flag = r.Get(1);
+			Warning("-H264SeqParameterSet::Decoder() Exception\n");
+			//Error
+			return false;
 		}
-		CHECK(r); direct_8x8_inference_flag = r.Get(1);
-		CHECK(r); frame_cropping_flag = r.Get(1);
-		if (frame_cropping_flag)
-		{
-			CHECK(r); frame_crop_left_offset = ExpGolombDecoder::Decode(r);
-			CHECK(r); frame_crop_right_offset = ExpGolombDecoder::Decode(r);
-			CHECK(r); frame_crop_top_offset = ExpGolombDecoder::Decode(r);
-			CHECK(r); frame_crop_bottom_offset = ExpGolombDecoder::Decode(r);
-		}
-		//CHECK(r); vui_parameters_present_flag = r.Get(1);
-		//Free memory
-		free(aux);
 		//OK
-		return !r.Error();
+		return true;
 	}
+
 public:
 	DWORD GetWidth()	{ return ((pic_width_in_mbs_minus1 +1)*16) - frame_crop_right_offset *2 - frame_crop_left_offset *2; }
 	DWORD GetHeight()	{ return ((2 - frame_mbs_only_flag)* (pic_height_in_map_units_minus1 +1) * 16) - frame_crop_bottom_offset*2 - frame_crop_top_offset*2; }
+
+	bool GetSeparateColourPlaneFlag() const { return separate_colour_plane_flag; }
+	bool GetFrameMbsOnlyFlag() const { return frame_mbs_only_flag; }
+	BYTE GetLog2MaxFrameNumMinus4() const { return log2_max_frame_num_minus4; }
 	void Dump() const
 	{
 		Debug("[H264SeqParameterSet \n");
@@ -125,6 +528,7 @@ public:
 		Debug("\toffset_for_top_to_bottom_field=%d\n",		offset_for_top_to_bottom_field);
 		Debug("\tnum_ref_frames_in_pic_order_cnt_cycle=%u\n",	num_ref_frames_in_pic_order_cnt_cycle);
 		Debug("\tnum_ref_frames=%u\n",				num_ref_frames);
+		Debug("\tchroma_format_idc=%u\n",				chroma_format_idc);
 		Debug("\tgaps_in_frame_num_value_allowed_flag=%u\n",	gaps_in_frame_num_value_allowed_flag);
 		Debug("\tpic_width_in_mbs_minus1=%u\n",			pic_width_in_mbs_minus1);
 		Debug("\tpic_height_in_map_units_minus1=%u\n",		pic_height_in_map_units_minus1);
@@ -136,9 +540,11 @@ public:
 		Debug("\tframe_crop_right_offset=%u\n",			frame_crop_right_offset);
 		Debug("\tframe_crop_top_offset=%u\n",			frame_crop_top_offset);
 		Debug("\tframe_crop_bottom_offset=%u\n",		frame_crop_bottom_offset);
+		Debug("\tseparate_colour_plane_flag=%u\n",		separate_colour_plane_flag);
+		if (vuiParams)
+			vuiParams->Dump();
 		Debug("/]\n");
 	}
-private:
 	BYTE			profile_idc = 0;
 	bool			constraint_set0_flag = false;
 	bool			constraint_set1_flag = false;
@@ -155,6 +561,7 @@ private:
 	BYTE			num_ref_frames_in_pic_order_cnt_cycle = 0;
 	std::vector<int>	offset_for_ref_frame;
 	DWORD			num_ref_frames = 0;
+	DWORD			chroma_format_idc = 0;
 	bool			gaps_in_frame_num_value_allowed_flag = false;
 	DWORD			pic_width_in_mbs_minus1 = 0;
 	DWORD			pic_height_in_map_units_minus1 = 0;
@@ -166,8 +573,8 @@ private:
 	DWORD			frame_crop_right_offset = 0;
 	DWORD			frame_crop_top_offset = 0;
 	DWORD			frame_crop_bottom_offset = 0;
-	//bool			vui_parameters_present_flag = false;
-
+	bool			separate_colour_plane_flag = 0;
+	std::optional<VuiParameters>   vuiParams;
 };
 
 class H264PictureParameterSet
@@ -175,60 +582,73 @@ class H264PictureParameterSet
 public:
 	bool Decode(const BYTE* buffer,DWORD bufferSize)
 	{
-		//SHould be done otherway, like modifying the BitReader to escape the input NAL, but anyway.. duplicate memory
-		BYTE *aux = (BYTE*)malloc(bufferSize);
-		//Escape
-		DWORD len = NalUnescapeRbsp(aux,buffer,bufferSize);
-		//Create bit reader
-		BitReader r(aux,len);
-		//Read SQS
-		CHECK(r); pic_parameter_set_id = ExpGolombDecoder::Decode(r);
-		CHECK(r); seq_parameter_set_id = ExpGolombDecoder::Decode(r);
-		CHECK(r); entropy_coding_mode_flag = r.Get(1);
-		CHECK(r); pic_order_present_flag = r.Get(1);
-		CHECK(r); num_slice_groups_minus1 = ExpGolombDecoder::Decode(r);
-		if( num_slice_groups_minus1 > 0 )
+		RbspReader reader(buffer, bufferSize);
+		RbspBitReader r(reader);
+
+		try
 		{
-			CHECK(r); slice_group_map_type = ExpGolombDecoder::Decode(r);
-			if( slice_group_map_type == 0 )
-				for( int iGroup = 0; iGroup <= num_slice_groups_minus1; iGroup++ )
-				{
-					CHECK(r); run_length_minus1.assign(iGroup,ExpGolombDecoder::Decode(r));
-				}
-			else if( slice_group_map_type == 2 )
-				for( int iGroup = 0; iGroup < num_slice_groups_minus1; iGroup++ )
-				{
-					CHECK(r); top_left.assign(iGroup,ExpGolombDecoder::Decode(r));
-					CHECK(r); bottom_right.assign(iGroup,ExpGolombDecoder::Decode(r));
-				}
-			else if( slice_group_map_type == 3 || slice_group_map_type ==  4 || slice_group_map_type == 5 )
+			//Read SQS
+			pic_parameter_set_id	 = r.GetExpGolomb();
+			seq_parameter_set_id	 = r.GetExpGolomb();
+			entropy_coding_mode_flag = r.Get(1);
+			pic_order_present_flag	 = r.Get(1);
+			num_slice_groups_minus1	 = r.GetExpGolomb();
+
+			if( num_slice_groups_minus1 > 0 )
 			{
-				CHECK(r); slice_group_change_direction_flag = r.Get(1);
-				CHECK(r); slice_group_change_rate_minus1 = ExpGolombDecoder::Decode(r);
-			} else if( slice_group_map_type == 6 ) {
-				CHECK(r); pic_size_in_map_units_minus1 = ExpGolombDecoder::Decode(r);
-				for( int i = 0; i <= pic_size_in_map_units_minus1; i++ )
+				slice_group_map_type = r.GetExpGolomb();
+
+				if( slice_group_map_type == 0 )
 				{
-					CHECK(r); slice_group_id.assign(i,r.Get(ceil(log2(num_slice_groups_minus1+1))));
+					for( int iGroup = 0; iGroup <= num_slice_groups_minus1; iGroup++ )
+					{
+						run_length_minus1.assign(iGroup,r.GetExpGolomb());
+					}
+				}
+				else if( slice_group_map_type == 2 ) 
+				{
+					for( int iGroup = 0; iGroup < num_slice_groups_minus1; iGroup++ )
+					{
+						top_left.assign(iGroup,r.GetExpGolomb());
+						bottom_right.assign(iGroup,r.GetExpGolomb());
+					}
+				}
+				else if( slice_group_map_type == 3 || slice_group_map_type ==  4 || slice_group_map_type == 5 )
+				{
+					slice_group_change_direction_flag = r.Get(1);
+					slice_group_change_rate_minus1 = r.GetExpGolomb();
+				}
+				else if( slice_group_map_type == 6 ) 
+				{
+					pic_size_in_map_units_minus1 = r.GetExpGolomb();
+					for( int i = 0; i <= pic_size_in_map_units_minus1; i++ )
+					{
+						slice_group_id.assign(i,r.Get(ceil(log2(num_slice_groups_minus1+1))));
+					}
 				}
 			}
-		}
-		CHECK(r); num_ref_idx_l0_active_minus1 = ExpGolombDecoder::Decode(r);
-		CHECK(r); num_ref_idx_l1_active_minus1 = ExpGolombDecoder::Decode(r);
-		CHECK(r); weighted_pred_flag = r.Get(1);
-		CHECK(r); weighted_bipred_idc = r.Get(2);
-		CHECK(r); pic_init_qp_minus26 = ExpGolombDecoder::DecodeSE(r); //Signed
-		CHECK(r); pic_init_qs_minus26 = ExpGolombDecoder::DecodeSE(r); //Signed
-		CHECK(r); chroma_qp_index_offset = ExpGolombDecoder::DecodeSE(r); //Signed
-		CHECK(r); deblocking_filter_control_present_flag = r.Get(1);
-		CHECK(r); constrained_intra_pred_flag = r.Get(1);
-		CHECK(r); redundant_pic_cnt_present_flag = r.Get(1);
 
-		//Free memory
-		free(aux);
+			num_ref_idx_l0_active_minus1		= r.GetExpGolomb();
+			num_ref_idx_l1_active_minus1		= r.GetExpGolomb();
+			weighted_pred_flag			= r.Get(1);
+			weighted_bipred_idc			= r.Get(2);
+			pic_init_qp_minus26			= r.GetExpGolombSigned(); //Signed
+			pic_init_qs_minus26			= r.GetExpGolombSigned(); //Signed
+			chroma_qp_index_offset			= r.GetExpGolombSigned(); //Signed
+			deblocking_filter_control_present_flag	= r.Get(1);
+			constrained_intra_pred_flag		= r.Get(1);
+			redundant_pic_cnt_present_flag		= r.Get(1);
+		}
+		catch (std::exception& e)
+		{
+			Warning("-H264PictureParameterSet::Decoder() Exception\n");
+			//Error
+			return false;
+		}
 		//OK
 		return true;
 	}
+
 public:
 	void Dump() const
 	{
@@ -254,7 +674,6 @@ public:
 		Debug("\tredundant_pic_cnt_present_flag=%u\n",		redundant_pic_cnt_present_flag);
 		Debug("/]\n");
 	}
-private:
 	BYTE			pic_parameter_set_id = 0;
 	BYTE			seq_parameter_set_id = 0;
 	bool			entropy_coding_mode_flag = false;
@@ -277,7 +696,105 @@ private:
 	int			chroma_qp_index_offset = 0;
 	bool			deblocking_filter_control_present_flag = false;
 	bool			constrained_intra_pred_flag = false;
-	bool			redundant_pic_cnt_present_flag = false;
+	bool			redundant_pic_cnt_present_flag = false;	
+};
+
+class H264SliceHeader
+{
+public:
+
+	bool Decode(const BYTE* buffer, DWORD bufferSize, const H264SeqParameterSet& sps)
+	{	
+		RbspReader reader(buffer, bufferSize);
+		RbspBitReader r(reader);
+		
+		try
+		{
+			first_mb_in_slice	= r.GetExpGolomb();
+			slice_type		= r.GetExpGolomb();
+			pic_parameter_set_id	= r.GetExpGolomb();
+		
+			if (sps.GetSeparateColourPlaneFlag())
+			{
+				colour_plane_id = r.Get(2);
+			}
+		
+			frame_num = r.Get(sps.GetLog2MaxFrameNumMinus4() + 4);
+		
+			if (!sps.GetFrameMbsOnlyFlag())
+			{
+				field_pic_flag = r.Get(1);
+				if (field_pic_flag)
+				{
+					bottom_field_flag = r.Get(1);
+				}
+			}
+		}
+		catch (std::exception& e)
+		{
+			Warning("-H264SliceHeader::Decoder() Exception\n");
+			//Error
+			return false;
+		}
+		//OK
+		return true;
+	}
+	
+	inline uint32_t GetFirstMbInSlice() const
+	{
+		return first_mb_in_slice;
+	}
+	
+	inline uint32_t GetSliceType() const
+	{
+		return slice_type;
+	}
+	
+	inline uint32_t GetPicPpsId() const
+	{
+		return pic_parameter_set_id;
+	}
+	
+	inline uint32_t GetColourPlaneId() const
+	{
+		return colour_plane_id;
+	}
+	
+	inline uint32_t GetFrameNum() const
+	{
+		return frame_num;
+	}
+	
+	inline bool GetFieldPicFlag() const
+	{
+		return field_pic_flag;
+	}
+	
+	inline bool GetBottomFieldFlag() const
+	{
+		return bottom_field_flag;
+	}
+	
+	void Dump() const
+	{
+		Debug("[H264SliceHeader \n");
+		Debug("\tfirstMbInSlice=%u\n", first_mb_in_slice);
+		Debug("\tslice_type=%u\n", slice_type);
+		Debug("\tpic_parameter_set_id=%u\n", pic_parameter_set_id);
+		Debug("\tcolour_plane_id=%u\n", colour_plane_id);
+		Debug("\field_pic_flag=%d\n", field_pic_flag);
+		Debug("\tbottom_field_flag=%d\n", bottom_field_flag);
+		Debug("/]\n");
+	}
+
+private:
+	uint32_t first_mb_in_slice = 0;
+	uint32_t slice_type = 0;
+	uint32_t pic_parameter_set_id = 0;
+	uint8_t colour_plane_id = 0;
+	uint8_t frame_num = 0;
+	bool field_pic_flag = false;
+	bool bottom_field_flag = false;
 };
 
 #undef CHECK

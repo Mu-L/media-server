@@ -41,21 +41,35 @@ bool RTPPayload::SetPayload(const RTPPayload& other)
 	return true;
 }
 
-bool RTPPayload::PrefixPayload(BYTE *data,DWORD size)
+
+bool RTPPayload::PrefixPayload(const BYTE* data, DWORD size)
 {
 	//Check size
-	if (size>payload-buffer.data())
+	if (size > payload - buffer.data ())
 		//Error
 		return false;
 	//Copy
-	memcpy(payload-size,data,size);
+	memcpy (payload-size, data, size);
 	//Set pointers
-	payload  -= size;
+	payload -= size;
 	payloadLen += size;
 	//good
 	return true;
 }
 
+bool RTPPayload::AppendPayload (const BYTE* data, DWORD size)
+{
+	//Check size
+	if ((payload - buffer.data ()) + payloadLen + size > GetMaxMediaLength ())
+		//Error
+		return false;
+	//Copy
+	memcpy (payload + payloadLen, data, size);
+	//Update length
+	payloadLen += size;
+	//good
+	return true;
+}
 
 bool RTPPayload::SkipPayload(DWORD skip) 
 {

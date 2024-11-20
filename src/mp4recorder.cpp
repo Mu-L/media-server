@@ -3,8 +3,11 @@
 #include <unistd.h>
 #include <string.h>
 #include "log.h"
+#include "Buffer.h"
+#include "BufferReader.h"
 #include "mp4recorder.h"
 #include "h264/h264.h"
+#include "av1/Obu.h"
 #include "aac/aacconfig.h"
 #include "opus/opusconfig.h"
 
@@ -187,7 +190,30 @@ int mp4track::CreateVideoTrack(VideoCodec::Type codec, DWORD rate, int width, in
 				//If hints are not disabled
 			}
 			break;
-		}		
+		}
+		case VideoCodec::AV1:
+		{
+			// Should parse video packet to get this values
+			MP4Duration av1FrameDuration = 1.0 / 30;
+#ifdef MP4_AV1_VIDEO_TYPE      
+			// Create video track
+			track = MP4AddAV1VideoTrack(mp4, rate, av1FrameDuration, width, height);
+#else
+			// Create video track
+			track = MP4AddVideoTrack(mp4, rate, av1FrameDuration, width, height, MP4_PRIVATE_VIDEO_TYPE);
+#endif
+			//If hints are not disabled
+			if (!disableHints)
+			{
+				// Create video hint track
+				hint = MP4AddHintTrack(mp4, track);
+				// Set payload type for hint track
+				type = 103;
+				MP4SetHintTrackRtpPayload(mp4, hint, "VP9", &type, 0, NULL, 1, 0);
+				//If hints are not disabled
+			}
+			break;
+		}
 		default:
 			return Error("-Codec %s not supported yet\n",VideoCodec::GetNameFor(codec));
 	}
@@ -326,9 +352,45 @@ int mp4track::WriteAudioFrame(AudioFrame &audioFrame)
 
 int mp4track::FlushVideoFrame(VideoFrame* frame,DWORD duration)
 {
-	//Log("-mp4track::FlushVideoFrame() [duration:%u,width:%d,height:%d%s]\n",duration, frame->GetWidth(), frame->GetWidth(), frame->IsIntra() ? ",intra" : "");
+	//Log("-mp4track::FlushVideoFrame() [duration:%u,width:%d,height:%d%s]\n",duration, frame->GetWidth(), frame->GetHeight(), frame->IsIntra() ? ",intra" : "");
 	// Save video frame
 	MP4WriteSample(mp4, track, frame->GetData(), frame->GetLength(), duration, 0, frame->IsIntra());
+
+	//Tyr to extract the OBU sequence if we don't have one already
+	if (frame->GetCodec() == VideoCodec::AV1 && !hasConfigObu)
+	{
+		//Get reader for av1 encoded packet
+		ObuHeader obuHeader;
+		BufferReader reader(frame->GetData(), frame->GetLength());
+		//Start of obu mark
+		auto ini = reader.Mark();
+		//For each obu
+		while (reader.GetLeft() && obuHeader.Parse(reader))
+		{
+			//Get length from header or read the rest available
+			auto payloadSize = obuHeader.length.value_or(reader.GetLeft());
+			//Ensure we have enought data for the rest of the obu
+			if (!reader.Assert(payloadSize))
+				break;
+
+			//Skip the rest of the obu
+			reader.Skip(payloadSize);
+
+			//If it is a obu sequence
+			if (obuHeader.type == ObuType::ObuSequenceHeader)
+			{
+				Debug("-mp4track::SetAv1SequenceObu() | Got Sequence OBU\n");
+				//Add to the mp4 codec config
+				MP4SetAv1SequenceObu(mp4, track, reader.PeekData(ini), reader.GetOffset(ini));
+				//No need to search more
+				hasConfigObu = true;
+				//Done
+				break;
+			}
+			//Start of obu mark
+			ini = reader.Mark();
+		}
+	}
 
 	//Check if we have rtp data
 	if (hint && frame->HasRtpPacketizationInfo())
@@ -393,6 +455,7 @@ int mp4track::FlushVideoFrame(VideoFrame* frame,DWORD duration)
 	return 1;
 }
 
+
 void mp4track::AddH264SequenceParameterSet(const BYTE* data, DWORD size)
 {
 	//If it a SPS NAL
@@ -424,6 +487,7 @@ void mp4track::AddH264SequenceParameterSet(const BYTE* data, DWORD size)
 		}
 	}
 }
+
 
 void mp4track::AddH264PictureParameterSet(const BYTE* data, DWORD size)
 {
@@ -484,17 +548,17 @@ int mp4track::FlushTextFrame(TextFrame *frame, DWORD duration)
 	DWORD size = frame->GetLength();
 
 	//Create data to send
-	BYTE* data = (BYTE*)malloc(size+2);
+	std::vector<BYTE> data(size+2);
 
 	//Set size
 	data[0] = size>>8;
 	data[1] = size & 0xFF;
 	//Copy text
-	memcpy(data+2,frame->GetData(),frame->GetLength());
+	memcpy(data.data()+2,frame->GetData(),frame->GetLength());
 	//Log
 	Debug("-mp4track::FlushTextFrame() [timestamp:%lu,duration:%lu,size:%u]\n]",frame->GetTimeStamp(),frameduration,size+2);
 	//Write sample
-	MP4WriteSample( mp4, track, data, size+2, frameduration, 0, false );
+	MP4WriteSample( mp4, track, data.data(), size+2, frameduration, 0, false );
 
 	//If we have to clear the screen after 7 seconds
 	if (duration-frameduration>0)
@@ -506,12 +570,10 @@ int mp4track::FlushTextFrame(TextFrame *frame, DWORD duration)
 		data[1] = 0;
 
 		//Write sample
-		MP4WriteSample( mp4, track, data, 2, duration-frameduration, 0, false );
+		MP4WriteSample( mp4, track, data.data(), 2, duration-frameduration, 0, false );
 	}
 	// Delete old one
 	delete frame;
-	//Free data
-	free(data);
 	//Stored
 	return 1;
 }
@@ -557,7 +619,7 @@ int mp4track::Close()
 				break;
 			case MediaFrame::Video:
 				//Flush it
-				FlushVideoFrame((VideoFrame*)frame,frame->GetClockRate());
+				FlushVideoFrame((VideoFrame*)frame,frame->GetDuration());
 				break;
 			case MediaFrame::Text:
 				//Flush it
@@ -611,19 +673,6 @@ MP4Recorder::~MP4Recorder()
         if (mp4!=MP4_INVALID_FILE_HANDLE)
 		//Close sync
 		Close(false);
-        
-	//For each audio track
-	for (Tracks::iterator it = audioTracks.begin(); it!=audioTracks.end(); ++it)
-		//delete it
-		delete(it->second);
-	//For each video track
-	for (Tracks::iterator it = videoTracks.begin(); it!=videoTracks.end(); ++it)
-		//delete it
-		delete(it->second);
-	//For each text track
-	for (Tracks::iterator it = textTracks.begin(); it!=textTracks.end(); ++it)
-		//delete it
-		delete(it->second);
 }
 
 bool MP4Recorder::Create(const char* filename)
@@ -662,7 +711,6 @@ bool MP4Recorder::Record(bool waitVideo)
 
 bool MP4Recorder::Record(bool waitVideo, bool disableHints)
 {
-	
 	Log("-MP4Recorder::Record() [waitVideo:%d,disableHints:%d]\n",waitVideo,disableHints);
 	
         //Check mp4 file is opened
@@ -676,7 +724,7 @@ bool MP4Recorder::Record(bool waitVideo, bool disableHints)
 	this->disableHints = disableHints;
 	
 	//Run in thread
-	loop.Async([=](auto now){
+	loop.AsyncUnsafe([=](auto now){
 		//Recording
 		recording = true;
 
@@ -698,7 +746,7 @@ bool MP4Recorder::Stop()
 	Log("-MP4Recorder::Stop()\n");
 	
 	//Signal async	
-	loop.Async([=](auto now){
+	loop.AsyncUnsafe([=](auto now){
 		//not recording anymore
 		recording = false;
 	});
@@ -717,7 +765,7 @@ bool MP4Recorder::Close(bool async)
 	Log("-MP4Recorder::Close()\n");
 	
         //Stop always
-        auto res = loop.Future([=](auto now){
+        auto res = loop.FutureUnsafe([=](auto now){
 		Debug(">MP4Recorder::Close() | Async\n");
 		
 		//Not recording anymore
@@ -774,7 +822,7 @@ void MP4Recorder::onMediaFrame(DWORD ssrc, const MediaFrame &frame)
 {
 	
 	//run async	
-	loop.Async([=,cloned = frame.Clone()](auto now){
+	loop.AsyncUnsafe([=,cloned = frame.Clone()](auto now){
 		//Check we are recording
 		if (recording) 
 		{
@@ -813,14 +861,6 @@ void MP4Recorder::processMediaFrame(DWORD ssrc, const MediaFrame &frame, QWORD t
 	{
 		case MediaFrame::Audio:
 		{
-			//It is an audio track
-			mp4track* audioTrack = NULL;
-			//Find the ssrc
-			Tracks::iterator it = audioTracks.find(ssrc);
-			//If found
-			if (it!=audioTracks.end())
-				//Get it
-				audioTrack = it->second;
 			//Convert to audio frame
 			AudioFrame &audioFrame = (AudioFrame&) frame;
 			//Check if it is the first
@@ -837,12 +877,12 @@ void MP4Recorder::processMediaFrame(DWORD ssrc, const MediaFrame &frame, QWORD t
 			}
 
 			// Check if we have the audio track
-			if (!audioTrack)
+			if (audioTracks.find(ssrc)==audioTracks.end())
 			{
 				// Calculate time diff since first
 				QWORD delta = time > first ? time-first : 0;
 				//Create object
-				audioTrack = new mp4track(mp4);
+				auto audioTrack = std::make_unique<mp4track>(mp4);
 				//Create track
 				audioTrack->CreateAudioTrack(audioFrame.GetCodec(),audioFrame.GetClockRate(),disableHints);
 				//Set name as ssrc
@@ -866,22 +906,15 @@ void MP4Recorder::processMediaFrame(DWORD ssrc, const MediaFrame &frame, QWORD t
 					audioTrack->WriteAudioFrame(empty);
 				}
 				//Add it to map
-				audioTracks[ssrc] = audioTrack;
+				audioTracks[ssrc] = std::move(audioTrack);
 			}
 			// Save audio rtp packet
-			audioTrack->WriteAudioFrame(audioFrame);
+			audioTracks[ssrc]->WriteAudioFrame(audioFrame);
 			break;
 		}
 		case MediaFrame::Video:
 		{
-			//It is an video track
-			mp4track* videoTrack = NULL;
-			//Find the ssrc
-			Tracks::iterator it = videoTracks.find(ssrc);
-			//If found
-			if (it!=videoTracks.end())
-				//Get it
-				videoTrack = it->second;
+	
 			//Convert to video frame
 			VideoFrame &videoFrame = (VideoFrame&) frame;
 
@@ -907,18 +940,16 @@ void MP4Recorder::processMediaFrame(DWORD ssrc, const MediaFrame &frame, QWORD t
 			if (!waitVideo)
 			{
 				// Check if we have the audio track
-				if (!videoTrack)
+				if (videoTracks.find(ssrc) == videoTracks.end())
 				{
 					// Calculate time diff since first
 					QWORD delta = time > first ? time-first : 0;
 					//Create object
-					videoTrack = new mp4track(mp4);
+					auto videoTrack = std::make_unique<mp4track>(mp4);
 					//Create track
 					videoTrack->CreateVideoTrack(videoFrame.GetCodec(),videoFrame.GetClockRate(),videoFrame.GetWidth(),videoFrame.GetHeight(),disableHints);
 					//Set name as ssrc
 					videoTrack->SetTrackName(std::to_string(ssrc));
-					//Add it to map
-					videoTracks[ssrc] = videoTrack;
 					
 					//If it is h264
 					if (videoFrame.GetCodec() == VideoCodec::H264)
@@ -984,31 +1015,23 @@ void MP4Recorder::processMediaFrame(DWORD ssrc, const MediaFrame &frame, QWORD t
 						//Send first empty packet
 						videoTrack->WriteVideoFrame(empty);
 					}
+					
+					//Add it to map
+					videoTracks[ssrc] = std::move(videoTrack);
 				}
 
 				// Save audio rtp packet
-				videoTrack->WriteVideoFrame(videoFrame);
+				videoTracks[ssrc]->WriteVideoFrame(videoFrame);
 			}
 			break;
 		}
 		case MediaFrame::Text:
 		{
-			//It is an text track
-			mp4track* textTrack = NULL;
-			//Find the ssrc
-			Tracks::iterator it = textTracks.find(ssrc);
-			//If found
-			if (it!=textTracks.end())
-				//Get it
-				textTrack = it->second;
-			//Convert to audio frame
-			TextFrame &textFrame = (TextFrame&) frame;
-
 			// Check if we have the audio track
-			if (!textTrack)
+			if (textTracks.find(ssrc) == textTracks.end())
 			{
 				//Create object
-				textTrack = new mp4track(mp4);
+				auto textTrack = std::make_unique<mp4track>(mp4);
 				//Create track
 				textTrack->CreateTextTrack();
 				//Set name as ssrc
@@ -1017,8 +1040,8 @@ void MP4Recorder::processMediaFrame(DWORD ssrc, const MediaFrame &frame, QWORD t
 				TextFrame empty(0,(BYTE*)NULL,0);
 				//Send first empty packet
 				textTrack->WriteTextFrame(empty);
-				//Add it to map
-				textTracks[ssrc] = textTrack;
+				
+				textTracks[ssrc] = std::move(textTrack);
 			}
 
 			//Check if it is the first
@@ -1033,13 +1056,17 @@ void MP4Recorder::processMediaFrame(DWORD ssrc, const MediaFrame &frame, QWORD t
 					//Send event
 					this->listener->onFirstFrame(first);
 			}
+				
+			//Convert to audio frame
+			TextFrame &textFrame = (TextFrame&) frame;
+
 			// Calculate new timestamp
 			QWORD timestamp = time-first;
 			//Update timestamp
 			textFrame.SetTimestamp(timestamp);
 
 			// Save audio rtp packet
-			textTrack->WriteTextFrame(textFrame);
+			textTracks[ssrc]->WriteTextFrame(textFrame);
 			break;
 		}
 		case MediaFrame::Unknown:

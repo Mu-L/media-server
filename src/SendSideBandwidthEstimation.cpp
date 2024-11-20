@@ -122,9 +122,10 @@ void SendSideBandwidthEstimation::ReceivedFeedback(uint8_t feedbackNum, const st
 	//For each packet
 	for (const auto& feedback : packets)
 	{
-		//Get feedback data
-		auto transportSeqNum	= feedback.first;
-		auto receivedTime	= feedback.second; 
+		//We need to wrap the sequence number as the rtcp reports calculates it as base+counter
+		// which is required to be able to retrieve the packets in increasing order her
+		uint16_t transportSeqNum	= static_cast<uint16_t>(feedback.first);
+		uint64_t receivedTime		= feedback.second; 
 
 		//Get packet
 		auto stat = transportWideSentPacketsStats.Get(transportSeqNum);
@@ -164,6 +165,23 @@ void SendSideBandwidthEstimation::ReceivedFeedback(uint8_t feedbackNum, const st
 			//Dump stats
 			//Log("recv #%u sent:%.8lu (+%.6ld) recv:%.8lu (+%.6ld) delta:%.6ld fb:%u, size:%u, bwe:%lu rtt:%lld rttMin:%lld acuDelta:%lld acuDeltaMin:%lld)\n",transportSeqNum,sent,deltaSent,recv,deltaRecv,delta,feedbackNum, stat->size, bandwidthEstimation, rttEstimated, rttMin, accumulatedDelta/1000, accumulatedDeltaMin/1000);
 			
+			//Check if we've written more than max size and if so, create a new file to write
+			if (bweStatsFileSizeLimit > 0 && bweStatsBytesWritten > bweStatsFileSizeLimit)
+			{
+				//Close file
+				if (fd != FD_INVALID)
+				{
+					close(fd);
+					//Open a new file with a count appended for the same ID. Cron job will take care of cleanup
+					std::string newFile = bweStatsFileName + "." + std::to_string(bweStatsFileCount++);
+					if ((fd = open(newFile.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600))<0)
+					{
+						Error("-SendSideBandwidthEstimation::ReceivedFeedback() Failed to create updated BWE stats file %s : reason %s\n",newFile.c_str(),strerror(errno));
+						fd = FD_INVALID;
+					}
+					bweStatsBytesWritten = 0;
+				}
+			}
 			//If dumping to file
 			if (fd!=FD_INVALID)
 			{
@@ -171,7 +189,17 @@ void SendSideBandwidthEstimation::ReceivedFeedback(uint8_t feedbackNum, const st
 				//Create log
 				int len = snprintf(msg, 1024, "%.8lu|%u|%hhu|%u|%lu|%lu|%lu|%lu|%ld|%ld|%ld|%u|%u|%u|%u|%u|%d|%d|%d|%d|%d\n", fb, transportSeqNum, feedbackNum, stat->size, sent, recv, deltaSent, deltaRecv, delta, accumulatedDelta/1000, accumulatedDeltaMin/1000, GetEstimatedBitrate(), GetTargetBitrate(), GetAvailableBitrate(), rtt, rttMin, rttEstimated, stat->mark, stat->rtx, stat->probing, state);
 				//Write it
-				[[maybe_unused]] ssize_t written = write(fd,msg,len);
+				ssize_t written = write(fd,msg,len);
+				if (written < 0)
+				{
+					Error("-SendSideBandwidthEstimation::ReceivedFeedback() Failed writing to BWE log : reason %s\n",strerror(errno));
+					close(fd);
+					fd = FD_INVALID;
+				}
+				else
+				{
+					bweStatsBytesWritten  += written;
+				}
 			}
 			
 			//Check if it was not lost
@@ -274,7 +302,7 @@ uint32_t SendSideBandwidthEstimation::GetTotalSentBitrate() const
 
 void SendSideBandwidthEstimation::SetState(ChangeState state)
 {
-	UltraDebug("-SendSideBandwidthEstimation::SetState() [state:%d,prev:%d,consecutiveChanges:%d]\n",state,this->state,consecutiveChanges);
+	//Log("-SendSideBandwidthEstimation::SetState() [state:%d,prev:%d,consecutiveChanges:%d]\n",state,this->state,consecutiveChanges);
 
 	//Set number of consecutive chantes
 	if (this->state == state)
@@ -427,7 +455,7 @@ void SendSideBandwidthEstimation::EstimateBandwidthRate(uint64_t when)
 	//If rtt increasing
 	if (lastFeedbackDelta > 2000 && delta > 0)
 	{
-		auto prev = targetBitrate;
+		[[maybe_unused]] auto prev = targetBitrate;
 		//Decrease factor
 		double factor = 1 - static_cast<double>(delta) / (delta + rttEstimated * 1000 + kMonitorDuration);
 		//Adapt to rtt slope, accumulatedDelta MUST be possitive
@@ -499,7 +527,7 @@ void SendSideBandwidthEstimation::EstimateBandwidthRate(uint64_t when)
 	}
 }
 
-int SendSideBandwidthEstimation::Dump(const char* filename) 
+int SendSideBandwidthEstimation::Dump(const char* filename, size_t fileSizeLimit) 
 {
 	//If already dumping
 	if (fd!=FD_INVALID)
@@ -511,8 +539,10 @@ int SendSideBandwidthEstimation::Dump(const char* filename)
 	//Open file
 	if ((fd = open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0600))<0)
 		//Error
-		return false; //Error("Could not open file [err:%d]\n",errno);
-
+		return Error("Could not open file [file:%s,err:%d:%s]\n",filename,errno,strerror(errno));
+	bweStatsFileName = filename;
+	bweStatsFileSizeLimit = fileSizeLimit;
+	
 	//Done
 	return 1;
 }

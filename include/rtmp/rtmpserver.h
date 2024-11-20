@@ -27,7 +27,7 @@ public:
 		RTMPNetConnection::Listener *listener,
 		std::function<void(bool)> accept
 	) override;
-	virtual void onDisconnect(const RTMPConnection::shared& con) override;
+	virtual void onDisconnect(RTMPConnection* con) override;
 
 protected:
 	int Run();

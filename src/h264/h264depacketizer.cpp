@@ -20,6 +20,8 @@ H264Depacketizer::H264Depacketizer(bool annexB) :
 {
 	//Set clock rate
 	frame.SetClockRate(90000);
+	//Disable shared buffer
+	frame.DisableSharedBuffer();
 }
 
 H264Depacketizer::~H264Depacketizer()
@@ -57,7 +59,11 @@ MediaFrame* H264Depacketizer::AddPacket(const RTPPacket::shared& packet)
 		frame.SetTime(packet->GetTime());
 		//Set sender time
 		frame.SetSenderTime(packet->GetSenderTime());
+
+		// Presentation time == DTS as there are no B-frames in RTP at the moment
+		frame.SetPresentationTimestamp(packet->GetTimestamp());
 	}
+	
 	//Set SSRC
 	frame.SetSSRC(packet->GetSSRC());
 	//Add payload

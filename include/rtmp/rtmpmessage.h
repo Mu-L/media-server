@@ -30,21 +30,114 @@ class RTMPMediaFrame
 public:
 	enum Type {Audio=8,Video=9};
 public:
-	virtual ~RTMPMediaFrame();
+	virtual ~RTMPMediaFrame() = default;
 	virtual RTMPMediaFrame* Clone() = 0;
 
 	Type  GetType()		{ return type;		}
 	QWORD GetTimestamp()	{ return timestamp;	}
 	void  SetTimestamp(QWORD timestamp) { this->timestamp = timestamp; }
 
+	QWORD GetSenderTime() const { return senderTime; }
+	void  SetSenderTime(QWORD senderTime) { this->senderTime = senderTime; }
+
 	virtual DWORD Parse(BYTE *data,DWORD size);
 	virtual DWORD Serialize(BYTE* buffer,DWORD size);
-	virtual DWORD GetSize()	{ return bufferSize+1; 	}
+	virtual DWORD GetSize()	{ return buffer->GetSize() + 1; }
 
-	virtual BYTE*	GetMediaData()			{ return buffer;		}
-	virtual DWORD	GetMediaSize()			{ return mediaSize;		}
-	virtual DWORD	GetMaxMediaSize()		{ return bufferSize;		}
-	virtual void	SetMediaSize(DWORD mediaSize)	{ this->mediaSize = mediaSize;	}
+	virtual DWORD	GetMediaSize()			{ return buffer->GetSize();			}
+	virtual DWORD	GetMaxMediaSize()		{ return buffer->GetCapacity();			}
+	virtual void	SetMediaSize(DWORD mediaSize)	{ AdquireBuffer(); buffer->SetSize(mediaSize);	}
+
+	
+	const BYTE*	GetMediaData() const		{ return buffer->GetData();			}
+	//BYTE*		GetMediaData()			{ AdquireBuffer(); return buffer->GetData();	}
+	const Buffer::shared& GetBuffer() const		{ return buffer; }
+
+	void DisableSharedBuffer() { disableSharedBuffer = true; }
+
+	void ResetData(DWORD size = 0)
+	{
+		//Create new owned buffer
+		buffer = std::make_shared<Buffer>(size);
+		//Owned buffer
+		ownedBuffer = true;
+	}
+
+	void Alloc(DWORD size)
+	{
+		//Adquire buffer
+		AdquireBuffer();
+		//Allocate mem
+		buffer->Alloc(size);
+	}
+
+	void SetMedia(const BYTE* data, DWORD size)
+	{
+		//Adquire buffer
+		AdquireBuffer();
+		//Allocate mem
+		buffer->SetData(data, size);
+	}
+
+	DWORD AppendMedia(const BYTE* data, DWORD size)
+	{
+		//Get current pos
+		DWORD pos = buffer->GetSize();
+		//Adquire buffer
+		AdquireBuffer();
+		//Append data
+		buffer->AppendData(data, size);
+		//Return previous pos
+		return pos;
+	}
+
+	DWORD AppendMedia(BufferReader& reader, DWORD size)
+	{
+		//Get current pos
+		DWORD pos = buffer->GetSize();
+		//Adquire buffer
+		AdquireBuffer();
+		//Append data
+		buffer->AppendData(reader.GetData(size), size);
+		//Return previous pos
+		return pos;
+	}
+
+	DWORD AppendMedia(const Buffer& append)
+	{
+		//Get current pos
+		DWORD pos = buffer->GetSize();
+		//Adquire buffer
+		AdquireBuffer();
+		//Append data
+		buffer->AppendData(append.GetData(), append.GetSize());
+		//Return previous pos
+		return pos;
+	}
+
+	DWORD AppendMedia(BufferReader& reader)
+	{
+		return AppendMedia(reader, reader.GetLeft());
+	}
+
+	void PrependMedia(const BYTE* data, DWORD size)
+	{
+		//Store old buffer
+		auto old = buffer;
+		//New one
+		buffer = std::make_shared<Buffer>(old->GetSize() + size);
+		//We own the payload
+		ownedBuffer = true;
+		//Append data
+		buffer->AppendData(data, size);
+		//Append data
+		buffer->AppendData(old->GetData(), old->GetSize());
+	}
+
+	void PrependMedia(const Buffer& buffer)
+	{
+		PrependMedia(buffer.GetData(), buffer.GetSize());
+	}
 
 	virtual void	Dump();
 
@@ -61,15 +154,35 @@ public:
 	}
 
 protected:
-	RTMPMediaFrame(Type type,QWORD timestamp,BYTE *data,DWORD size);
-	RTMPMediaFrame(Type type,QWORD timestamp,DWORD size);
+	RTMPMediaFrame(Type type, QWORD timestamp, DWORD size);
+	RTMPMediaFrame(Type type, QWORD timestamp, const Buffer::shared& buffer);
 
+	bool AdquireBuffer()
+	{
+		if (!buffer) return false;
+		
+		//If already owning
+		if (ownedBuffer)
+			//Do nothing
+			return true;
+
+		//Clone payload
+		buffer = std::make_shared<Buffer>(buffer->GetData(), buffer->GetSize());
+		//We own the payload
+		ownedBuffer = true;
+		
+		return true;
+	}
+
+	Type type;
 	QWORD timestamp = 0;
-	BYTE *buffer = nullptr;
-	DWORD bufferSize = 0;
-	DWORD mediaSize = 0;
-	DWORD pos = 0;
-	Type type = Type(0);
+	QWORD senderTime = 0;
+
+	Buffer::shared	buffer;
+	bool ownedBuffer = false;
+	bool disableSharedBuffer = false;
+
+	
 };
 
 class RTMPVideoFrame : public RTMPMediaFrame
@@ -79,22 +192,30 @@ public:
 	enum FrameType  {INTRA=1,INTER=2,DISPOSABLE_INTER=3,GENERATED_KEY_FRAME=4,VIDEO_INFO=5};
 	enum AVCType	{AVCHEADER = 0, AVCNALU = 1, AVCEND = 2 };
 	enum PacketType {
-		SequenceStart = 0,
-		CodedFrames = 1,
-		SequenceEnd = 2,
-		CodedFramesX = 3,
-		Metadata = 4,
-		MPEG2TSSequenceStart = 5
+		SequenceStart		= 0,
+		CodedFrames		= 1,
+		SequenceEnd		= 2,
+		CodedFramesX		= 3,
+		Metadata		= 4,
+		MPEG2TSSequenceStart	= 5,
+		MultiTrack		= 6
+	};
+	enum MultTrackType {
+		OneTrack		= 0x00,
+		ManyTracks		= 0x10,
+		ManyTracksManyCodecs	= 0x20,
 	};
 	enum VideoCodecEx {
-		AV1 = FourCcToUint32("av01"),
-		VP9 = FourCcToUint32("vp09"),
-		HEVC = FourCcToUint32("hvc1")
+		H264	= FourCcToUint32("avc1"),
+		AV1	= FourCcToUint32("av01"),
+		VP9	= FourCcToUint32("vp09"),
+		HEVC	= FourCcToUint32("hvc1"),
 	};
 public:
-	RTMPVideoFrame(QWORD timestamp,DWORD size);
+	RTMPVideoFrame(QWORD timestamp, DWORD size);
+	RTMPVideoFrame(QWORD timestamp, const Buffer::shared& buffer);
 	RTMPVideoFrame(QWORD timestamp, const AVCDescriptor &desc);
-	virtual ~RTMPVideoFrame();
+	virtual ~RTMPVideoFrame() = default;
 	virtual RTMPMediaFrame* Clone();
 
 	virtual DWORD	Parse(BYTE *data,DWORD size);
@@ -103,10 +224,11 @@ public:
 
 	void		SetVideoCodec(VideoCodec codec)		{ this->codec = codec;		}
 	void		SetFrameType(FrameType frameType)	{ this->frameType = frameType;	}
-	VideoCodec	GetVideoCodec()				const { return codec;		}
-	FrameType	GetFrameType()				const { return frameType;	}
-	BYTE		GetAVCType()				const { return extraData[0];	}
-	DWORD		GetAVCTS()				const { return ((DWORD)extraData[1]) << 16 | ((DWORD)extraData[2]) << 8 | extraData[3]; }
+	VideoCodec	GetVideoCodec()	const			{ return codec;		}
+	FrameType	GetFrameType() const			{ return frameType;	}
+	
+	// @todo Remove codec specifc functions and add unified version
+	BYTE		GetAVCType() const			{ return extraData[0];	}
 	
 	DWORD		SetVideoFrame(BYTE* data,DWORD size);
 	void		SetAVCType(BYTE type)			{ extraData[0] = type;		}
@@ -117,6 +239,7 @@ public:
 	VideoCodecEx	GetVideoCodecEx() const			{ return codecEx; }
 	PacketType      GetPacketType() const			{ return packetType; }
 	
+	int32_t		GetCompositionTimeOffset() const;
 	
 	bool IsConfig() const
 	{
@@ -128,7 +251,7 @@ public:
 		return GetPacketType() == RTMPVideoFrame::SequenceStart;
 	}
 	
-	virtual bool IsCodedFrames()
+	virtual bool IsCodedFrames() const
 	{
 		if (!isExtended)
 		{
@@ -138,6 +261,8 @@ public:
 		return GetPacketType() == RTMPVideoFrame::CodedFrames ||
 			GetPacketType() == RTMPVideoFrame::CodedFramesX;
 	}
+
+	BYTE GetTrackId() const { return trackId; }
 	
 private:
 	
@@ -149,17 +274,22 @@ private:
 		VideoTagBody,
 		VideoTagHevcCompositionTime,
 		VideoTagData,
+		VideoTagHeaderMultiTrack,
+		VideoTagHeaderTrackId,
 	};
 
 	bool		isExtended = false;
+	bool		isMultiTrack = false;
+	
 	VideoCodec	codec = VideoCodec::AVC;
 	VideoCodecEx	codecEx = VideoCodecEx::HEVC;
 	
 	FrameType	frameType = FrameType::INTER;
 	PacketType	packetType = PacketType::SequenceStart;
 	
-	BYTE		extraData[4];
-	BYTE		fourCc[4];
+	BYTE		extraData[4] = {};
+	BYTE		fourCc[4] = {};
+	BYTE		trackId	= 0;
 
 	ParsingState parsingState = ParsingState::VideoTagHeader;
 	
@@ -173,19 +303,20 @@ public:
 	enum SoundRate		{RATE5khz=0,RATE11khz=1,RATE22khz=2,RATE44khz=3};
 	enum AACPacketType	{AACSequenceHeader = 0, AACRaw = 1};
 public:
-	RTMPAudioFrame(QWORD timestamp,DWORD size);
-	RTMPAudioFrame(QWORD timestamp,const AACSpecificConfig &config);
-	virtual ~RTMPAudioFrame();
+	RTMPAudioFrame(QWORD timestamp, DWORD size);
+	RTMPAudioFrame(QWORD timestamp, const Buffer::shared& buffer);
+	RTMPAudioFrame(QWORD timestamp, const AACSpecificConfig &config);
+	virtual ~RTMPAudioFrame() = default;
 	virtual RTMPMediaFrame* Clone();
 
 	virtual DWORD	Parse(BYTE *data,DWORD size);
 	virtual DWORD	Serialize(BYTE* buffer,DWORD size);
 	virtual DWORD	GetSize();
 
-	AudioCodec	GetAudioCodec()			{ return codec;			}
-	SoundRate	GetSoundRate()			{ return rate;			}
-	bool		IsSamples18Bits()		{ return sample16bits;		}
-	bool		IsStereo()			{ return stereo;		}
+	AudioCodec	GetAudioCodec()	const		{ return codec;			}
+	SoundRate	GetSoundRate()	const		{ return rate;			}
+	bool		IsSamples18Bits() const		{ return sample16bits;		}
+	bool		IsStereo() const		{ return stereo;		}
 	void		SetAudioCodec(AudioCodec codec)	{ this->codec = codec;		}
 	void		SetSoundRate(SoundRate rate)	{ this->rate = rate;		}
 	void		SetSamples16Bits(bool sample16bits) { this->sample16bits = sample16bits; }
@@ -193,7 +324,7 @@ public:
 	DWORD		SetAudioFrame(const BYTE* data,DWORD size);
 
 	void		SetAACPacketType(AACPacketType type)	{ extraData[0] = type;	}
-	AACPacketType   GetAACPacketType()			{ return (AACPacketType) extraData[0]; }
+	AACPacketType   GetAACPacketType() const		{ return (AACPacketType) extraData[0]; }
 
 	virtual void	Dump();
 private:
@@ -217,15 +348,16 @@ public:
 	DWORD Serialize(BYTE* buffer,DWORD size);
 	DWORD GetSize();
 
-	std::wstring 	GetName() 		{ return name->GetWString(); 	}
-	std::string 	GetNameUTF8() 		{ return name->GetUTF8String();	}
-	double		GetTransId()		{ return transId->GetNumber(); 	}
-	bool		HasName()		{ return name;			}
-	bool		HasTransId()		{ return transId;		}
-	bool		HasParams()  		{ return params; 		}
+	std::wstring 	GetName() const		{ return name->GetWString(); 	}
+	std::string 	GetNameUTF8() const	{ return name->GetUTF8String();	}
+	double		GetTransId() const	{ return transId->GetNumber(); 	}
+	bool		HasName() const		{ return name;			}
+	bool		HasTransId() const	{ return transId;		}
+	bool		HasParams() const	{ return params; 		}
 	AMFData*	GetParams()  		{ return params; 		}
-	DWORD		GetExtraLength() 	{ return extra.size(); 		}
+	DWORD		GetExtraLength() const	{ return extra.size(); 		}
 	AMFData*	GetExtra(DWORD i) 	{ return extra[i]; 		}
+	const std::vector<AMFData*>& GetExtra() { return extra;			}
 	void		Dump();
 	RTMPCommandMessage* Clone() const;
 	
@@ -247,9 +379,9 @@ public:
 		AddProperty(L"description",description);
 	};
 
-	const std::wstring GetCode()		{ return (std::wstring)GetProperty(L"code");		}
-	const std::wstring GetLevel()		{ return (std::wstring)GetProperty(L"level");		}
-	const std::wstring GetDescription()	{ return (std::wstring)GetProperty(L"description");	}
+	const std::wstring GetCode() 		{ return HasProperty(L"code") ? (std::wstring)GetProperty(L"code") : L"";		}
+	const std::wstring GetLevel() 		{ return HasProperty(L"level") ? (std::wstring)GetProperty(L"level") : L"";		}
+	const std::wstring GetDescription() 	{ return HasProperty(L"description") ? (std::wstring)GetProperty(L"description") : L"";	}
 };
 
 class RTMPMetaData
