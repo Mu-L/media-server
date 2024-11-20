@@ -35,6 +35,8 @@ public:
 	virtual void onEnded(const RTPIncomingMediaStream* stream) override;
 
 	virtual TimeService& GetTimeService()	override { return TimeServiceWrapper<RTPIncomingMediaStreamMultiplexer>::GetTimeService(); }
+	
+	virtual void OnCreated() override;
 	void Stop();
 private:
 	RTPIncomingMediaStream::shared incomingMediaStream;

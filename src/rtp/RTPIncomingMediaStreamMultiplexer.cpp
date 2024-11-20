@@ -9,7 +9,10 @@ RTPIncomingMediaStreamMultiplexer::RTPIncomingMediaStreamMultiplexer(const RTPIn
 {
 
 	Debug("-RTPIncomingMediaStreamMultiplexer::RTPIncomingMediaStreamMultiplexer() [stream:%p,this:%p]\n", incomingMediaStream, this);
+}
 
+void RTPIncomingMediaStreamMultiplexer::OnCreated()
+{
 	if (incomingMediaStream)
 	{	
 		//Add us as listeners
